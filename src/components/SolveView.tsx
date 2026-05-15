@@ -20,6 +20,13 @@ function strokeKey(item: CroppedItem): number {
   return item.questionIndex;
 }
 
+function solutionForContent(item: CroppedItem, solutions: CroppedItem[]): CroppedItem | undefined {
+  const seg = item.type === 'question' ? 0 : (item.stemIndex ?? 1);
+  return solutions.find(
+    s => s.questionIndex === item.questionIndex && (s.segmentIndex ?? 0) === seg,
+  );
+}
+
 type QuestionStatus = 'correct' | 'wrong' | null;
 
 import type { ToolbarDock, BgStyle as SettingsBgStyle } from '../utils/settings';
@@ -110,42 +117,6 @@ function redrawCanvas(ctx: CanvasRenderingContext2D, strokes: StrokeData[], w: n
 }
 
 // ── Question Card ─────────────────────────────────────────────────────────
-
-const SolutionBetweenCard: React.FC<{
-  item: CroppedItem;
-  questionNumber: number;
-  segmentIndex: number;
-  showSolOverride?: boolean;
-}> = ({ item, questionNumber, segmentIndex, showSolOverride }) => {
-  const [show, setShow] = useState(false);
-  const visible = showSolOverride ?? show;
-  const label =
-    segmentIndex === 0
-      ? `Soru ${questionNumber} — cevap alanı`
-      : `Öncül ${segmentIndex} sonrası cevap`;
-
-  return (
-    <div className="solve-gap-card">
-      <div className="solve-gap-card-header">
-        <span className="solve-gap-card-title">{label}</span>
-        <button
-          type="button"
-          className={`solve-gap-toggle${visible ? ' is-visible' : ' is-hidden'}`}
-          onClick={() => setShow(v => !v)}
-        >
-          {visible ? <EyeOff size={11} /> : <Eye size={11} />}
-          {visible ? 'Gizle' : 'Cevabı Gör'}
-        </button>
-      </div>
-      <div style={{
-        overflow: 'hidden', maxHeight: visible ? 2000 : 0, opacity: visible ? 1 : 0,
-        transition: 'max-height 0.4s ease, opacity 0.25s',
-      }}>
-        <img src={item.dataUrl} alt={label} draggable={false} style={{ width: '100%', display: 'block', background: '#fff' }} />
-      </div>
-    </div>
-  );
-};
 
 const QuestionCard: React.FC<{
   item: CroppedItem;
@@ -327,8 +298,29 @@ const QuestionCard: React.FC<{
           </>
           )}
           {solution && (
-            <button onClick={() => setShowSol(v => !v)} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 10px', borderRadius: 20, border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 10, fontWeight: 600, background: showSol ? 'rgba(255,69,58,0.15)' : 'rgba(48,209,88,0.12)', color: showSol ? '#ff453a' : '#30d158', transition: 'all 0.15s' }}>
-              {showSol ? <EyeOff size={10} /> : <Eye size={10} />} {showSol ? 'Gizle' : 'Çözümü Gör'}
+            <button
+              onClick={() => setShowSol(v => !v)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                padding: '2px 7px',
+                minHeight: 22,
+                borderRadius: 999,
+                border: '1px solid rgba(255,255,255,0.14)',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+                fontSize: 9,
+                fontWeight: 700,
+                letterSpacing: '0.01em',
+                background: showSol ? 'rgba(255,69,58,0.09)' : 'rgba(48,209,88,0.08)',
+                color: showSol ? 'rgba(255,110,102,0.95)' : 'rgba(118,235,148,0.95)',
+                backdropFilter: 'blur(6px)',
+                WebkitBackdropFilter: 'blur(6px)',
+                transition: 'all 0.15s',
+              }}
+            >
+              {showSol ? <EyeOff size={9} /> : <Eye size={9} />} {showSol ? 'Gizle' : 'Çözüm'}
             </button>
           )}
         </div>
@@ -665,23 +657,13 @@ export const SolveView: React.FC<SolveViewProps> = ({
               <div style={{ color: 'var(--text-tertiary)', fontSize: 14, marginTop: 80 }}>Henüz soru yok.</div>
             )}
             {visibleFlow.map(entry => {
-              if (entry.kind === 'solution') {
-                return (
-                  <SolutionBetweenCard
-                    key={entry.item.regionId}
-                    item={entry.item}
-                    questionNumber={entry.questionNumber}
-                    segmentIndex={entry.segmentIndex}
-                    showSolOverride={showAllSol || cardSolShown ? true : undefined}
-                  />
-                );
-              }
+              if (entry.kind !== 'content') return null;
               const isQ = entry.item.type === 'question';
               const sk = strokeKey(entry.item);
-              const solForCard = solutions.find(s => s.questionIndex === entry.item.questionIndex);
+              const solForCard = solutionForContent(entry.item, solutions);
               const isActive = entry.item.regionId === activeRegionId;
               return (
-                <div key={entry.item.regionId} className={isQ ? 'question-card-wrap' : undefined} style={{ outline: isActive ? '2px solid var(--accent)' : undefined, borderRadius: 8 }}>
+                <div key={entry.item.regionId} className="question-card-wrap" style={{ outline: isActive ? '2px solid var(--accent)' : undefined, borderRadius: 8 }}>
                   <QuestionCard
                     item={entry.item}
                     isQuestion={isQ}

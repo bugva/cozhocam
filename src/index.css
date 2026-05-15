@@ -464,6 +464,12 @@ body {
   pointer-events: none;
   width: 0;
 }
+.doc-sol-anchor--inset {
+  height: 0;
+}
+.doc-sol-anchor--inset .doc-sol-btn {
+  z-index: 13;
+}
 .doc-sol-btn {
   position: absolute;
   left: 0;
@@ -471,36 +477,47 @@ body {
   pointer-events: auto;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 6px 12px;
-  border-radius: 20px;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  border-radius: 50%;
   border: 1px solid transparent;
-  font-family: inherit;
-  font-size: 11px;
-  font-weight: 700;
   cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.2s var(--ease);
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+  transition: background 0.15s var(--ease), color 0.15s var(--ease), box-shadow 0.15s var(--ease), opacity 0.15s var(--ease);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
+  opacity: 0.82;
+}
+.doc-sol-btn:hover {
+  opacity: 1;
 }
 .doc-sol-btn--question {
-  background: rgba(255, 255, 255, 0.95);
-  color: #248a3d;
-  border-color: rgba(52, 199, 89, 0.35);
+  background: rgba(255, 255, 255, 0.38);
+  color: rgba(36, 138, 61, 0.9);
+  border-color: rgba(52, 199, 89, 0.22);
 }
-.doc-sol-btn--question:hover { background: #fff; box-shadow: 0 4px 16px rgba(52, 199, 89, 0.22); }
+.doc-sol-btn--question:hover {
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: 0 2px 8px rgba(52, 199, 89, 0.12);
+}
 .doc-sol-btn--stem {
-  background: rgba(255, 255, 255, 0.95);
-  color: #c93400;
-  border-color: rgba(255, 159, 10, 0.4);
+  background: rgba(255, 255, 255, 0.38);
+  color: rgba(201, 52, 0, 0.9);
+  border-color: rgba(255, 159, 10, 0.24);
 }
-.doc-sol-btn--stem:hover { background: #fff; box-shadow: 0 4px 16px rgba(255, 159, 10, 0.25); }
+.doc-sol-btn--stem:hover {
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: 0 2px 8px rgba(255, 159, 10, 0.14);
+}
 .doc-sol-btn.is-open {
-  background: rgba(255, 69, 58, 0.1);
-  color: #ff453a;
-  border-color: rgba(255, 69, 58, 0.35);
+  background: rgba(255, 69, 58, 0.14);
+  color: rgba(255, 90, 82, 0.95);
+  border-color: rgba(255, 69, 58, 0.24);
+  opacity: 0.95;
 }
 /* Çözüm: sayfa sağına bitişik sütun, beyaz alanla aynı hizada */
 .doc-sol-reveal {
@@ -1241,6 +1258,7 @@ body {
   position: absolute;
   z-index: 200;
   pointer-events: none;
+  overflow: visible;
 }
 .tool-dock--right {
   right: max(8px, env(safe-area-inset-right));
@@ -1292,12 +1310,12 @@ body {
 .tool-dock-inner--vertical {
   flex-direction: column;
   padding: 12px 8px;
-  max-height: min(85vh, 720px);
-  overflow-y: auto;
+  max-height: none;
+  overflow: visible;
 }
 .tool-dock-inner--vertical.tool-dock-inner--compact {
   padding: 6px 5px;
-  max-height: min(80vh, 560px);
+  max-height: none;
   width: 44px;
 }
 .tool-dock-tools {
@@ -1354,9 +1372,17 @@ body {
 }
 .tool-picker-flyout--side {
   bottom: auto;
-  left: calc(100% + 8px);
   top: 50%;
   transform: translateY(-50%);
+}
+/* Sağ dock: flyout sola açılır (ekran dışına taşmaz) */
+.tool-dock--right .tool-picker-flyout--side {
+  left: auto;
+  right: calc(100% + 8px);
+}
+.tool-dock--left .tool-picker-flyout--side {
+  left: calc(100% + 8px);
+  right: auto;
 }
 .tool-picker-colors {
   display: flex;
@@ -1648,23 +1674,10 @@ body {
   opacity: 0.5;
 }
 
-/* ── Klasik çözüm: yatay tablet split ──────────────── */
-@media (min-width: 900px) and (orientation: landscape) {
-  .solve-classic-scroll {
-    display: grid !important;
-    grid-template-columns: 1fr 1fr;
-    align-items: start;
-    gap: 24px;
-    max-width: 1600px;
-    padding: 32px 48px 120px !important;
-  }
-  .solve-classic-scroll .question-card-wrap {
-    grid-column: 1;
-  }
-  .solve-classic-scroll .question-card-wrap + .solve-gap-card,
-  .solve-classic-scroll .solve-gap-card {
-    grid-column: 2;
-  }
+/* Klasik çözüm: tek sütun — soru + cevap alanı üst üste */
+.solve-classic-scroll {
+  width: 100%;
+  max-width: 860px;
 }
 
 /* ── Tablet bölge tutamaçları ──────────────────────── */
@@ -1681,9 +1694,10 @@ body {
   min-height: 48px;
 }
 .doc-sol-btn {
-  min-height: 48px;
-  min-width: 48px;
-  padding: 12px 16px !important;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
 }
 
 /* ── Kayıt göstergesi ─────────────────────────────── */

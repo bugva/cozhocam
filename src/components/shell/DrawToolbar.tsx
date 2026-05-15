@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Pencil, Eraser, PenLine, Highlighter, Hand, Undo2, Redo2, ChevronLeft, SlidersHorizontal,
 } from 'lucide-react';
@@ -62,6 +62,23 @@ export const DrawToolbar: React.FC<DrawToolbarProps> = ({
   const [collapsed, setCollapsed] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (pickerRef.current?.contains(e.target as Node)) return;
+      setPickerOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPickerOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [pickerOpen]);
 
   if (collapsed) {
     return (
@@ -131,7 +148,7 @@ export const DrawToolbar: React.FC<DrawToolbarProps> = ({
           <button
             type="button"
             className={`tool-btn tool-btn--compact tool-picker-toggle${pickerOpen ? ' is-active' : ''}`}
-            onClick={() => { hapticLight(); setPickerOpen(v => !v); }}
+            onClick={(e) => { e.stopPropagation(); hapticLight(); setPickerOpen(v => !v); }}
             aria-label="Renk ve kalınlık seç"
             aria-expanded={pickerOpen}
           >

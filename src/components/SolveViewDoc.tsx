@@ -10,7 +10,6 @@ import type { Region } from './PdfViewer';
 import type { CroppedItem } from '../utils/db';
 import {
   segmentIndexAfterContent,
-  solutionDocButtonLabel,
   solutionPanelTitle,
   solutionToggleKey,
 } from '../utils/questionGroups';
@@ -167,8 +166,6 @@ const DocPage: React.FC<{
           const boxLeft = region.x / SCALE;
           const boxTop = (region.y - layout.offsetY) / SCALE;
           const boxW = item.width / SCALE;
-          const boxH = item.height / SCALE;
-          const btnLabel = solutionDocButtonLabel(item);
           const panelTitle = solutionPanelTitle(item, qNum);
           const isStem = item.type === 'stem';
           const variant = isStem ? 'stem' : 'question';
@@ -182,33 +179,36 @@ const DocPage: React.FC<{
           const solImgH = sol.height / SCALE;
           const revealTop = placementSide ? gapTop : nextBlockTop;
           const revealH = placementSide ? gapH : solImgH;
-          const connectorTop = boxTop + boxH / 2;
-          const anchorTop = boxTop;
-          const anchorH = boxH;
+          const btnInset = 10;
+          const btnTop = boxTop + btnInset;
+          const btnLeft = regionRight - btnInset;
+          const connectorTop = btnTop + 12;
 
           return (
             <React.Fragment key={`sol-${item.regionId}-${seg}`}>
+              {placementSide && connectorW > 0 && (
+                <div
+                  className={`doc-sol-connector-line doc-sol-connector-line--${variant}`}
+                  style={{
+                    left: regionRight,
+                    top: connectorTop,
+                    width: connectorW,
+                  }}
+                />
+              )}
               <div
-                className={`doc-sol-connector-line doc-sol-connector-line--${variant}`}
-                style={{
-                  left: regionRight,
-                  top: connectorTop,
-                  width: connectorW,
-                }}
-              />
-              <div
-                className="doc-sol-anchor"
-                style={{ left: btnColLeft, top: anchorTop, height: anchorH }}
+                className="doc-sol-anchor doc-sol-anchor--inset"
+                style={{ left: btnLeft, top: btnTop }}
               >
                 <button
                   type="button"
                   className={`doc-sol-btn doc-sol-btn--${variant}${shown ? ' is-open' : ''}`}
-                  style={{ transform: 'translate(-100%, -50%)' }}
+                  style={{ transform: 'translate(-100%, 0)' }}
                   onClick={() => onToggleSol(toggleKey)}
-                  title={panelTitle}
+                  title={shown ? 'Gizle' : panelTitle}
+                  aria-label={shown ? 'Çözümü gizle' : panelTitle}
                 >
-                  {shown ? <EyeOff size={12} strokeWidth={2.5} /> : <Eye size={12} strokeWidth={2.5} />}
-                  {shown ? 'Gizle' : btnLabel}
+                  {shown ? <EyeOff size={9} strokeWidth={2.5} /> : <Eye size={9} strokeWidth={2.5} />}
                 </button>
               </div>
 
