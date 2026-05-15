@@ -468,16 +468,41 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clampPan]);
 
-  // Animate back to origin with a smooth CSS transition
-  const returnToPage = () => {
-    if (!contentRef.current) return;
-    contentRef.current.style.transition = 'transform 0.45s cubic-bezier(0.25, 1, 0.5, 1)';
-    applyTransform(0, 0, 1);
-    setZoom(1);
-    setTimeout(() => {
-      if (contentRef.current) contentRef.current.style.transition = '';
-    }, 460);
-  };
+  /** Aktif sayfayı görünüm ortasına getir (tx=0 belgeyi sola yaslar) */
+  const centerActivePage = useCallback((animate = false) => {
+    const vp = viewportRef.current;
+    const content = contentRef.current;
+    if (!vp || !content) return;
+
+    const sc = 1;
+    const pageEl = content.querySelector<HTMLElement>(`[data-doc-page-index="${activePage}"]`);
+
+    let tx = txRef.current;
+    let ty = tyRef.current;
+
+    if (pageEl) {
+      const vpRect = vp.getBoundingClientRect();
+      const pageRect = pageEl.getBoundingClientRect();
+      const vpCx = vpRect.left + vpRect.width / 2;
+      const vpCy = vpRect.top + vpRect.height / 2;
+      const pageCx = pageRect.left + pageRect.width / 2;
+      const pageCy = pageRect.top + pageRect.height / 2;
+      tx = txRef.current + (vpCx - pageCx);
+      ty = tyRef.current + (vpCy - pageCy);
+    }
+
+    if (animate) {
+      content.style.transition = 'transform 0.45s cubic-bezier(0.25, 1, 0.5, 1)';
+      window.setTimeout(() => {
+        if (content) content.style.transition = '';
+      }, 460);
+    }
+
+    panApply(tx, ty, sc);
+    setZoom(sc);
+  }, [activePage, panApply]);
+
+  const returnToPage = () => centerActivePage(true);
 
   const applyTool  = useCallback((t: Tool) => { G.tool = t; setTool(t); tick(n => n + 1); }, []);
   const applyColor = useCallback((c: string) => { G.color = c; G.tool = 'pencil'; setColor(c); setTool('pencil'); tick(n => n + 1); }, []);
@@ -520,6 +545,11 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
       return allOpen ? new Set<number>() : new Set(keys);
     });
   }, [allSolutionKeys]);
+
+  const allSolutionsOpen = useMemo(() => {
+    const keys = Array.from(allSolutionKeys);
+    return keys.length > 0 && keys.every(k => shownSols.has(k));
+  }, [allSolutionKeys, shownSols]);
 
   useApplePencilGestures({
     targetRef: chromeRootRef,
@@ -572,7 +602,7 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
   };
   const zoomIn  = () => zoomTo(Math.min(MAX_ZOOM, +(scRef.current + 0.25).toFixed(2)));
   const zoomOut = () => zoomTo(Math.max(MIN_ZOOM, +(scRef.current - 0.25).toFixed(2)));
-  const zoomReset = () => { hapticLight(); panApply(0, 0, 1); setZoom(1); };
+  const zoomReset = () => { hapticLight(); centerActivePage(true); };
 
   // Native wheel + touch listeners — bypasses React's event system for max smoothness
   useEffect(() => {
@@ -729,6 +759,21 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
     }
   }, [activePage, visiblePageLayouts.length]);
 
+  useEffect(() => {
+    const t = window.setTimeout(() => centerActivePage(false), 80);
+    return () => clearTimeout(t);
+  }, [focusMode, activePage, visiblePageLayouts.length, centerActivePage]);
+
+  useEffect(() => {
+    const vp = viewportRef.current;
+    if (!vp) return;
+    const ro = new ResizeObserver(() => {
+      if (scRef.current === 1) centerActivePage(false);
+    });
+    ro.observe(vp);
+    return () => ro.disconnect();
+  }, [centerActivePage]);
+
   const totalPages = visiblePageLayouts.length;
 
   const onViewportClick = () => {
@@ -842,6 +887,8 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
           canUndo={canUndo}
           canRedo={canRedo}
           onOpenSettings={onOpenSettings}
+          onToggleAllSolutions={allSolutionKeys.size > 0 ? toggleAllSolutions : undefined}
+          allSolutionsOpen={allSolutionsOpen}
           extra={toolbarExtra}
         />
         {showDockTip && !focusMode && (
@@ -859,7 +906,7 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
           <OnboardingTip
             dock={toolbarDock}
             title="Apple Pencil"
-            message="Çift dokunuş (kaleme fiziksel dokunma): silgi. Sıkıştırma: belgedeki tüm çözümleri aç veya kapat."
+            message="Tarayıcıda çift dokunuş ve sıkıştırma çoğu zaman çalışmaz. Silgi için silgi düğmesi; tüm çözümler için göz simgesini kullanın. Ayarlar → Apple Pencil’de çift dokunuşu “Yok” yapmamanız gerekir."
             onDismiss={() => {
               markOnboardingSeen('pencil_squeeze');
               setShowPencilTip(false);
@@ -895,9 +942,9 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
             width: 'max-content',
             minWidth: '100%',
           }}>
-            {visiblePageLayouts.map(pg => (
+            {visiblePageLayouts.map((pg, pageIdx) => (
+              <div key={pg.pageNum} data-doc-page-index={pageIdx} className="doc-page-slot">
               <DocPage
-                key={pg.pageNum}
                 layout={pg}
                 items={pageItems.get(pg.pageNum) || []}
                 solMap={solMap}
@@ -912,6 +959,7 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
                 questionStatus={questionStatus}
                 onQuestionStatusChange={onQuestionStatusChange}
               />
+              </div>
             ))}
           </div>
           {isFar && showPanTip && (
@@ -925,10 +973,10 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
               }}
             />
           )}
-          {isFar && !focusMode && (
+          {isFar && (
             <button
               type="button"
-              className="doc-return-page-fab"
+              className={`doc-return-page-fab${focusMode ? ' doc-return-page-fab--focus' : ''}`}
               onClick={() => { hapticLight(); returnToPage(); }}
               aria-label="Sayfaya dön"
               title="Sayfaya dön"

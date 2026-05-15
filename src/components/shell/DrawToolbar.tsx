@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Pencil, Eraser, PenLine, Highlighter, Hand, Undo2, Redo2, ChevronLeft, SlidersHorizontal, Settings,
+  Eye, EyeOff,
 } from 'lucide-react';
 import type { ToolbarDock } from '../../utils/settings';
 import { hapticLight } from '../../utils/haptic';
@@ -40,6 +41,9 @@ export interface DrawToolbarProps {
   canUndo?: boolean;
   canRedo?: boolean;
   onOpenSettings?: () => void;
+  /** Pencil sıkıştırma web’de çalışmayabilir — tüm çözümler aç/kapa */
+  onToggleAllSolutions?: () => void;
+  allSolutionsOpen?: boolean;
   extra?: React.ReactNode;
 }
 
@@ -59,6 +63,8 @@ export const DrawToolbar: React.FC<DrawToolbarProps> = ({
   canUndo,
   canRedo,
   onOpenSettings,
+  onToggleAllSolutions,
+  allSolutionsOpen = false,
   extra,
 }) => {
   const [collapsed, setCollapsed] = useState(false);
@@ -223,6 +229,18 @@ export const DrawToolbar: React.FC<DrawToolbarProps> = ({
 
         {/* Ayırıcı */}
         <div className="tool-dock-sep" />
+
+        {onToggleAllSolutions && (
+          <button
+            type="button"
+            className={`tool-btn tool-btn--compact${allSolutionsOpen ? ' is-active' : ''}`}
+            onClick={() => { hapticLight(); onToggleAllSolutions(); }}
+            aria-label={allSolutionsOpen ? 'Tüm çözümleri gizle' : 'Tüm çözümleri göster'}
+            title="Tüm çözümler (Pencil sıkıştırma yerine)"
+          >
+            {allSolutionsOpen ? <EyeOff size={16} /> : <Eye size={16} />}
+          </button>
+        )}
 
         <button
           type="button"

@@ -649,6 +649,8 @@ export const SolveView: React.FC<SolveViewProps> = ({
           canUndo={canUndo}
           canRedo={canRedo}
           onOpenSettings={onOpenSettings}
+          onToggleAllSolutions={visibleTotalQ > 0 ? () => { hapticMedium(); setShowAllSol(v => !v); } : undefined}
+          allSolutionsOpen={showAllSol}
           extra={toolbarExtra}
         />
         {showDockTip && !focusMode && (

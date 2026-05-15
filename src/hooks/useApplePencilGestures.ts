@@ -1,27 +1,38 @@
 import { useEffect, useRef, type RefObject } from 'react';
 import { hapticLight, hapticMedium } from '../utils/haptic';
 
-/** W3C Pointer Events: 2 = barrel (çift dokunuş), 5 = silgi ucu */
+/**
+ * Apple Pencil çift dokunuş / sıkıştırma çoğu PWA’da Safari’ye hiç iletilmez (yalnızca native
+ * UIPencilInteraction). Burada Pointer Events ile yakalanabildiği kadar dinlenir; güvenilir
+ * kullanım için araç çubuğundaki yedek düğmeleri kullanın.
+ */
 const BARREL_BUTTON = 2;
 const ERASER_BUTTON = 5;
-/** Apple Pencil Pro sıkıştırma — düşük eşik (Safari tutarsız olabiliyor) */
-const SQUEEZE_THRESHOLD = 0.2;
-const BARREL_DEBOUNCE_MS = 450;
+const SQUEEZE_THRESHOLD = 0.12;
+const BARREL_DEBOUNCE_MS = 400;
 
+function isCoarsePointerDevice(): boolean {
+  if (typeof window === 'undefined') return false;
+  return window.matchMedia('(pointer: coarse)').matches;
+}
+
+/** Çift dokunuş veya silgi ucu */
 function isPenBarrelOrEraser(e: PointerEvent): boolean {
   if (e.pointerType !== 'pen') return false;
   if (e.button === ERASER_BUTTON || e.button === BARREL_BUTTON) return true;
-  // Uç dokunmadan yalnızca barrel (buttons: 2)
+  // Barrel basılı, uç yok (buttons: 2)
   if ((e.buttons & 2) !== 0 && (e.buttons & 1) === 0) return true;
+  // Bazı WebKit sürümleri: pressure 0, yalnızca barrel
+  if (e.pressure === 0 && e.buttons === 2) return true;
   return false;
 }
 
 function squeezeAmount(e: PointerEvent): number {
-  return e.tangentialPressure ?? 0;
+  return Math.abs(e.tangentialPressure ?? 0);
 }
 
-function pointerOverElement(e: PointerEvent, el: HTMLElement): boolean {
-  const r = el.getBoundingClientRect();
+function pointerInRoot(e: PointerEvent, root: HTMLElement): boolean {
+  const r = root.getBoundingClientRect();
   return (
     e.clientX >= r.left
     && e.clientX <= r.right
@@ -34,7 +45,7 @@ export interface UseApplePencilGesturesOptions {
   enabled?: boolean;
   targetRef: RefObject<HTMLElement | null>;
   onToggleEraser: () => void;
-  /** Her sıkma jestinde bir kez (tüm çözümler aç/kapa vb.) */
+  /** Sıkıştırma: tüm çözümler aç/kapa */
   onSqueezeToggle: () => void;
 }
 
@@ -60,15 +71,8 @@ export function useApplePencilGestures({
       squeezeEngagedRef.current = false;
     };
 
-    const fireBarrel = (e: Event, opts?: { fromAuxClick?: boolean }) => {
-      if (!enabledRef.current) return;
-      if (!targetRef.current) return;
-
-      if (!opts?.fromAuxClick) {
-        const pe = e as PointerEvent;
-        if (pe.pointerType !== 'pen') return;
-        if (!isPenBarrelOrEraser(pe)) return;
-      }
+    const fireBarrel = (e: Event) => {
+      if (!enabledRef.current || !targetRef.current) return;
 
       const now = Date.now();
       if (now - lastBarrelAtRef.current < BARREL_DEBOUNCE_MS) return;
@@ -85,18 +89,24 @@ export function useApplePencilGestures({
       fireBarrel(e);
     };
 
-    /** Safari bazen çift dokunuşu auxclick (orta tuş) olarak gönderir */
+    const onPointerUp = (e: PointerEvent) => {
+      if (e.pointerType === 'pen') resetSqueeze();
+      if (isPenBarrelOrEraser(e)) fireBarrel(e);
+    };
+
+    /** iPad Safari bazen orta tık olarak gönderir — yalnızca dokunmatik cihazda */
     const onAuxClick = (e: MouseEvent) => {
-      if (e.button !== 1) return;
-      fireBarrel(e, { fromAuxClick: true });
+      if (e.button !== 1 || !isCoarsePointerDevice()) return;
+      fireBarrel(e);
     };
 
     const onSqueezeFrame = (ev: Event) => {
       const e = ev as PointerEvent;
       if (!enabledRef.current) return;
       if (e.pointerType !== 'pen') return;
+
       const root = targetRef.current;
-      if (!root || !pointerOverElement(e, root)) {
+      if (!root || !pointerInRoot(e, root)) {
         resetSqueeze();
         return;
       }
@@ -114,24 +124,25 @@ export function useApplePencilGestures({
     const captureOpts: AddEventListenerOptions = { capture: true, passive: false };
     const passiveCapture: AddEventListenerOptions = { capture: true, passive: true };
 
-    window.addEventListener('pointerdown', onPointerDown, captureOpts);
-    window.addEventListener('auxclick', onAuxClick, captureOpts);
-    window.addEventListener('pointermove', onSqueezeFrame, passiveCapture);
+    const root = document.documentElement;
+    root.addEventListener('pointerdown', onPointerDown, captureOpts);
+    root.addEventListener('pointerup', onPointerUp, captureOpts);
+    root.addEventListener('auxclick', onAuxClick, captureOpts);
+    root.addEventListener('pointermove', onSqueezeFrame, passiveCapture);
+    root.addEventListener('pointercancel', resetSqueeze, passiveCapture);
     if ('onpointerrawupdate' in window) {
-      window.addEventListener('pointerrawupdate', onSqueezeFrame, passiveCapture);
+      root.addEventListener('pointerrawupdate', onSqueezeFrame, passiveCapture);
     }
-    window.addEventListener('pointerup', resetSqueeze, passiveCapture);
-    window.addEventListener('pointercancel', resetSqueeze, passiveCapture);
 
     return () => {
-      window.removeEventListener('pointerdown', onPointerDown, captureOpts);
-      window.removeEventListener('auxclick', onAuxClick, captureOpts);
-      window.removeEventListener('pointermove', onSqueezeFrame, passiveCapture);
+      root.removeEventListener('pointerdown', onPointerDown, captureOpts);
+      root.removeEventListener('pointerup', onPointerUp, captureOpts);
+      root.removeEventListener('auxclick', onAuxClick, captureOpts);
+      root.removeEventListener('pointermove', onSqueezeFrame, passiveCapture);
+      root.removeEventListener('pointercancel', resetSqueeze, passiveCapture);
       if ('onpointerrawupdate' in window) {
-        window.removeEventListener('pointerrawupdate', onSqueezeFrame, passiveCapture);
+        root.removeEventListener('pointerrawupdate', onSqueezeFrame, passiveCapture);
       }
-      window.removeEventListener('pointerup', resetSqueeze, passiveCapture);
-      window.removeEventListener('pointercancel', resetSqueeze, passiveCapture);
       resetSqueeze();
     };
   }, [enabled, targetRef]);

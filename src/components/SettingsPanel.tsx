@@ -132,6 +132,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onChange
             </div>
           </section>
 
+          <section>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-tertiary)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>Apple Pencil (web)</div>
+            <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: 'var(--text-secondary)' }}>
+              Safari’de çift dokunuş ve sıkıştırma çoğu zaman web uygulamasına ulaşmaz. Silgi ve tüm çözümler için çözüm ekranındaki araç çubuğunu kullanın.
+              iOS Ayarlar → Apple Pencil → Çift Dokunuş “Yok” olmamalı. Sıkıştırma yalnızca Apple Pencil Pro’dadır.
+            </p>
+          </section>
+
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderRadius: 12, background: 'var(--sidebar-item-hover)' }}>
             <div>
               <div style={{ fontSize: 13, fontWeight: 600 }}>El reddi</div>
