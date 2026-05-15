@@ -1316,7 +1316,63 @@ body {
 .tool-btn--compact .tool-btn-label {
   display: none;
 }
-/* Inline renk + boyut (artık flyout yok) */
+/* Picker toggle + flyout */
+.tool-picker-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+.tool-picker-toggle {
+  position: relative;
+}
+.tool-picker-dot {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255,255,255,0.4);
+  pointer-events: none;
+}
+.tool-picker-flyout {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px;
+  border-radius: 14px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 400;
+  min-width: 130px;
+}
+.tool-picker-flyout--side {
+  bottom: auto;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+}
+.tool-picker-colors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 130px;
+}
+.tool-picker-sizes {
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* Inline renk + boyut */
 .tool-dock-colors--inline {
   display: flex;
   flex-direction: row;
