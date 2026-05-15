@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  Pencil, Eraser, PenLine, Highlighter, Hand, Undo2, Redo2, ChevronLeft, Palette,
+  Pencil, Eraser, PenLine, Highlighter, Hand, Undo2, Redo2, ChevronLeft,
 } from 'lucide-react';
 import type { ToolbarDock } from '../../utils/settings';
 import { hapticLight } from '../../utils/haptic';
@@ -59,7 +59,6 @@ export const DrawToolbar: React.FC<DrawToolbarProps> = ({
   extra,
 }) => {
   const [collapsed, setCollapsed] = useState(false);
-  const [paletteOpen, setPaletteOpen] = useState(false);
 
   if (collapsed) {
     return (
@@ -90,6 +89,7 @@ export const DrawToolbar: React.FC<DrawToolbarProps> = ({
           </button>
         )}
 
+        {/* Araçlar */}
         <div className="tool-dock-tools" role="group" aria-label="Araçlar">
           {TOOLS.map(t => (
             <button
@@ -106,65 +106,54 @@ export const DrawToolbar: React.FC<DrawToolbarProps> = ({
           ))}
         </div>
 
-        <div className="tool-dock-palette-wrap">
-          <button
-            type="button"
-            className={`tool-btn tool-btn--compact${paletteOpen ? ' is-active' : ''}`}
-            onClick={() => { hapticLight(); setPaletteOpen(v => !v); }}
-            aria-label="Renk ve kalınlık"
-            aria-expanded={paletteOpen}
-          >
-            <Palette size={16} />
-            <span
-              className="tool-palette-preview"
-              style={{ background: tool === 'eraser' ? 'var(--text-tertiary)' : color }}
+        {/* Ayırıcı */}
+        <div className="tool-dock-sep" />
+
+        {/* Renkler — her zaman görünür */}
+        <div className="tool-dock-colors tool-dock-colors--inline" role="group" aria-label="Renkler">
+          {COLORS.map(c => (
+            <button
+              key={c}
+              type="button"
+              className={`tool-color-swatch tool-color-swatch--sm${color === c && tool !== 'eraser' ? ' is-active' : ''}`}
+              style={{ background: c }}
+              onClick={() => { hapticLight(); onColor(c); if (tool === 'eraser') onTool('pencil'); }}
+              aria-label={`Renk ${c}`}
             />
-          </button>
-          {paletteOpen && (
-            <div
-              className={`tool-palette-flyout${isVertical ? ' tool-palette-flyout--side' : ''}`}
-              role="dialog"
-              aria-label="Renk ve kalınlık"
-            >
-              <div className="tool-dock-colors tool-dock-colors--compact" role="group" aria-label="Renkler">
-                {COLORS.map(c => (
-                  <button
-                    key={c}
-                    type="button"
-                    className={`tool-color-swatch tool-color-swatch--sm${color === c && tool !== 'eraser' ? ' is-active' : ''}`}
-                    style={{ background: c }}
-                    onClick={() => { hapticLight(); onColor(c); }}
-                    aria-label={`Renk ${c}`}
-                  />
-                ))}
-              </div>
-              <div className="tool-size-presets tool-size-presets--compact" role="group" aria-label="Kalınlık">
-                {STROKE_PRESETS.map(p => {
-                  const active = activePresetValue === p.value;
-                  return (
-                    <button
-                      key={p.value}
-                      type="button"
-                      className={`tool-size-preset tool-size-preset--sm${active ? ' is-active' : ''}`}
-                      onClick={() => { hapticLight(); onSize(p.value); }}
-                      aria-label={p.label}
-                      aria-pressed={active}
-                    >
-                      <span
-                        className="tool-size-preset-dot"
-                        style={{
-                          width: p.previewPx,
-                          height: p.previewPx,
-                          background: tool === 'eraser' ? 'var(--text-tertiary)' : color,
-                        }}
-                      />
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+          ))}
         </div>
+
+        {/* Ayırıcı */}
+        <div className="tool-dock-sep" />
+
+        {/* Kalınlık — her zaman görünür */}
+        <div className="tool-size-presets tool-size-presets--inline" role="group" aria-label="Kalınlık">
+          {STROKE_PRESETS.map(p => {
+            const active = activePresetValue === p.value;
+            return (
+              <button
+                key={p.value}
+                type="button"
+                className={`tool-size-preset tool-size-preset--sm${active ? ' is-active' : ''}`}
+                onClick={() => { hapticLight(); onSize(p.value); }}
+                aria-label={p.label}
+                aria-pressed={active}
+              >
+                <span
+                  className="tool-size-preset-dot"
+                  style={{
+                    width: p.previewPx,
+                    height: p.previewPx,
+                    background: tool === 'eraser' ? 'var(--text-tertiary)' : color,
+                  }}
+                />
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Ayırıcı */}
+        <div className="tool-dock-sep" />
 
         <button
           type="button"

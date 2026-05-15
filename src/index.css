@@ -1316,61 +1316,55 @@ body {
 .tool-btn--compact .tool-btn-label {
   display: none;
 }
-.tool-dock-palette-wrap {
-  position: relative;
-}
-.tool-palette-preview {
-  position: absolute;
-  right: 4px;
-  bottom: 4px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  pointer-events: none;
-}
-.tool-palette-flyout {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 8px;
-  border-radius: 12px;
-  background: var(--glass-bg);
-  backdrop-filter: blur(20px);
-  border: 1px solid var(--glass-border);
-  box-shadow: var(--shadow-lg);
+/* Inline renk + boyut (artık flyout yok) */
+.tool-dock-colors--inline {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-  z-index: 300;
-  min-width: 120px;
-}
-.tool-palette-flyout--side {
-  bottom: auto;
-  left: auto;
-  right: calc(100% + 8px);
-  top: 50%;
-  transform: translateY(-50%);
-}
-.tool-dock-colors--compact {
-  max-width: 108px;
+  flex-direction: row;
+  flex-wrap: wrap;
   gap: 5px;
+  align-items: center;
+  max-width: 120px;
+}
+.tool-dock-inner--vertical .tool-dock-colors--inline {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  max-width: none;
 }
 .tool-color-swatch--sm {
   width: 22px;
   height: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  flex-shrink: 0;
 }
-.tool-size-presets--compact {
-  grid-template-columns: repeat(4, 1fr);
-  max-width: none;
+.tool-size-presets--inline {
+  display: flex;
+  flex-direction: row;
   gap: 4px;
-  padding: 0;
+  align-items: center;
+}
+.tool-dock-inner--vertical .tool-size-presets--inline {
+  flex-direction: column;
 }
 .tool-size-preset--sm {
-  min-width: 28px;
-  min-height: 28px;
+  min-width: 32px;
+  min-height: 32px;
   border-radius: 8px;
+}
+/* Ayırıcı çizgi */
+.tool-dock-sep {
+  background: var(--glass-border);
+  flex-shrink: 0;
+}
+.tool-dock-inner:not(.tool-dock-inner--vertical) .tool-dock-sep {
+  width: 1px;
+  height: 20px;
+  margin: 0 2px;
+}
+.tool-dock-inner--vertical .tool-dock-sep {
+  height: 1px;
+  width: 20px;
+  margin: 2px 0;
 }
 .tool-dock-undo--compact {
   flex-direction: column;
