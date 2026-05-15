@@ -1,39 +1,74 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.js?url';
 import { PdfViewer, type Region } from './PdfViewer';
 import { cropRegionFromPdf, buildPageLayouts, type PageLayout } from '../utils/pdfCrop';
 import { SolveView } from './SolveView';
 import { SolveViewDoc } from './SolveViewDoc';
-import { Settings, Check, Loader2 } from 'lucide-react';
-import { type DocumentRecord, type CroppedItem } from '../utils/db';
-import { type SolveLayout } from '../utils/settings';
+import { Loader2, List, Undo2, Redo2 } from 'lucide-react';
+import { type DocumentRecord, type CroppedItem, type QuestionAnswerStatus } from '../utils/db';
+import { type AppSettings } from '../utils/settings';
+import { inferSolutionRegions, migrateRegions } from '../utils/questionGroups';
+import { WorkspaceTopBar } from './shell/WorkspaceTopBar';
+import { PdfDrawControls } from './shell/PdfDrawControls';
+import { OnboardingTip } from './shell/OnboardingTip';
+import { useDebouncedSave } from '../hooks/useDebouncedSave';
+import { useRegionHistory } from '../hooks/useRegionHistory';
+import { hasSeenOnboarding, markOnboardingSeen } from '../utils/onboarding';
+import { docDisplayName } from '../utils/breadcrumb';
+import { hapticSuccess } from '../utils/haptic';
+import { RegionListPanel } from './shell/RegionListPanel';
+import type { SaveStatus } from './shell/SaveIndicator';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 interface WorkspaceProps {
   doc: DocumentRecord;
   onSave: (updated: DocumentRecord) => void;
-  solveLayout: SolveLayout;
+  appSettings: AppSettings;
+  onModeChange?: (mode: DocumentRecord['mode']) => void;
+  breadcrumbSegments?: string[];
+  onOpenLibrary?: () => void;
 }
 
-export const Workspace: React.FC<WorkspaceProps> = ({ doc, onSave, solveLayout }) => {
+export const Workspace: React.FC<WorkspaceProps> = ({ doc, onSave, appSettings, onModeChange, breadcrumbSegments = [], onOpenLibrary }) => {
   const [mode, setMode] = useState(doc.mode);
-  const [regions, setRegions] = useState<Region[]>(doc.regions);
+  const {
+    regions,
+    setRegions,
+    setRegionsPreview,
+    undo: undoRegions,
+    redo: redoRegions,
+    canUndo: canUndoRegions,
+    canRedo: canRedoRegions,
+  } = useRegionHistory(migrateRegions(doc.regions));
   const [croppedItems, setCroppedItems] = useState<CroppedItem[]>(doc.croppedItems);
   const [isCropping, setIsCropping] = useState(false);
   const [cropProgress, setCropProgress] = useState({ current: 0, total: 0 });
   const [strokes, setStrokes] = useState<Record<number, any[]>>(doc.strokes || {});
+  const [questionStatus, setQuestionStatus] = useState<Record<number, QuestionAnswerStatus>>(
+    doc.questionStatus ?? {},
+  );
+  const [drawType, setDrawType] = useState<'question' | 'stem'>('question');
+  const [activeQuestionId, setActiveQuestionId] = useState<string | null>(null);
+  const [showDrawTip, setShowDrawTip] = useState(() => !hasSeenOnboarding('draw_regions'));
+  const [showPinchTip, setShowPinchTip] = useState(() => !hasSeenOnboarding('pdf_pinch'));
+  const [regionPanelOpen, setRegionPanelOpen] = useState(false);
+  const pdfScrollRef = useRef<HTMLDivElement>(null);
 
   const pdfRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
   const [pageLayouts, setPageLayouts] = useState<PageLayout[]>([]);
 
-  // Sync to db whenever key state changes
-  useEffect(() => {
-    onSave({ ...doc, mode, regions, croppedItems, strokes });
-  }, [mode, regions, croppedItems, strokes]);
+  const savePayload = useMemo(
+    () => ({ mode, regions, croppedItems, strokes, questionStatus }),
+    [mode, regions, croppedItems, strokes, questionStatus],
+  );
+  const persistDoc = useCallback(async (p: typeof savePayload) => {
+    await onSave({ ...doc, ...p });
+    onModeChange?.(p.mode);
+  }, [doc, onSave, onModeChange]);
+  const saveStatus = useDebouncedSave(savePayload, persistDoc);
 
-  // Load PDF for cropping
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -50,15 +85,17 @@ export const Workspace: React.FC<WorkspaceProps> = ({ doc, onSave, solveLayout }
     return () => { cancelled = true; };
   }, [doc.pdfData]);
 
+  const questionRegions = regions.filter(r => r.type === 'question');
+
+  useEffect(() => {
+    if (activeQuestionId && questionRegions.some(q => q.id === activeQuestionId)) return;
+    setActiveQuestionId(questionRegions[questionRegions.length - 1]?.id ?? null);
+  }, [questionRegions, activeQuestionId]);
+
   const inferSolutions = () => {
-    const qs = regions.filter(r => r.type === 'question').sort((a, b) => a.y - b.y);
-    if (!qs.length) return;
-    const sols: Region[] = qs.map((q, i) => {
-      const y0 = q.y + q.h;
-      const y1 = i < qs.length - 1 ? qs[i + 1].y : y0 + 600;
-      return { id: `sol-${i}`, x: 0, y: y0, w: 9999, h: Math.max(y1 - y0, 20), type: 'solution' };
-    });
-    setRegions([...qs, ...sols]);
+    if (!questionRegions.length) return;
+    hapticSuccess();
+    setRegions(inferSolutionRegions(regions));
     setMode('ADJUST_SOLUTIONS');
   };
 
@@ -73,95 +110,115 @@ export const Workspace: React.FC<WorkspaceProps> = ({ doc, onSave, solveLayout }
       const pages = pageLayouts;
       const items: CroppedItem[] = [];
       const questions = allRegs.filter(r => r.type === 'question').sort((a, b) => a.y - b.y);
-
-      const stems = allRegs.filter(r => r.type === 'stem').sort((a, b) => a.y - b.y);
+      const qIdToIndex = new Map(questions.map((q, i) => [q.id, i]));
 
       for (let i = 0; i < allRegs.length; i++) {
         setCropProgress({ current: i + 1, total: allRegs.length });
         await new Promise(r => setTimeout(r, 0));
         const reg = allRegs[i];
-        const dataUrl = await cropRegionFromPdf(pdf, pages, {
-          x: reg.x, y: reg.y, w: reg.w, h: reg.h,
-        });
+        const dataUrl = await cropRegionFromPdf(pdf, pages, { x: reg.x, y: reg.y, w: reg.w, h: reg.h });
         const dims = await imgDims(dataUrl);
-        let qIdx = 0;
-        if (reg.type === 'question') {
-          qIdx = questions.indexOf(reg);
-        } else if (reg.type === 'stem') {
-          // Her öncül bağımsız: kendi benzersiz indeksi = questions.length + stemIndex
-          qIdx = questions.length + stems.indexOf(reg);
-        } else {
-          // solution: ID'deki indeks veya 0
-          const m = reg.id.match(/sol-(\d+)/);
-          qIdx = m ? parseInt(m[1], 10) : 0;
-        }
+        const parentQid = reg.parentQuestionId ?? (reg.type === 'question' ? reg.id : undefined);
+        const qIdx = parentQid != null ? (qIdToIndex.get(parentQid) ?? 0) : questions.indexOf(reg);
+
         items.push({
           regionId: reg.id,
           type: reg.type as 'question' | 'solution' | 'stem',
           dataUrl, width: dims.width, height: dims.height,
           questionIndex: qIdx,
-          sortY: reg.y,  // PDF'deki konum — SolveView sıralaması için
+          sortY: reg.y,
+          stemIndex: reg.stemIndex,
+          segmentIndex: reg.segmentIndex,
         });
       }
 
       setCroppedItems(items);
+      hapticSuccess();
       setMode('SOLVE');
     } catch (err) { console.error('Crop error:', err); }
     finally { setIsCropping(false); }
-  }, [regions]);
+  }, [regions, pageLayouts]);
 
-  const handleStrokesChange = useCallback((questionIndex: number, newStrokes: any[]) => {
-    setStrokes(prev => ({ ...prev, [questionIndex]: newStrokes }));
+  const handleStrokesChange = useCallback((key: number, newStrokes: any[]) => {
+    setStrokes(prev => ({ ...prev, [key]: newStrokes }));
   }, []);
 
-  // "Düzenle" — sorulara veya çözüm alanlarına dönmek için, çizimler silinmez
-  const goEdit = () => {
-    if (mode === 'ADJUST_SOLUTIONS') setMode('SELECT_QUESTIONS');
-    else if (mode === 'SOLVE') setMode('SELECT_QUESTIONS'); // strokes korunur, sadece mod değişir
-  };
+  const handleQuestionStatusChange = useCallback((key: number, status: QuestionAnswerStatus | null) => {
+    setQuestionStatus(prev => {
+      const next = { ...prev };
+      if (status == null) delete next[key];
+      else next[key] = status;
+      return next;
+    });
+  }, []);
+
+  const goEdit = () => setMode('SELECT_QUESTIONS');
+
+  const focusRegion = useCallback((r: Region) => {
+    if (r.type === 'question') setActiveQuestionId(r.id);
+    else if (r.parentQuestionId) setActiveQuestionId(r.parentQuestionId);
+    pdfScrollRef.current?.scrollTo({ top: Math.max(0, r.y - 80), behavior: 'smooth' });
+  }, []);
 
   const questions = croppedItems.filter(c => c.type === 'question');
   const solutions = croppedItems.filter(c => c.type === 'solution');
-  const stems    = croppedItems.filter(c => c.type === 'stem');
+  const stems = croppedItems.filter(c => c.type === 'stem');
+  const displayName = docDisplayName(doc.name);
+
+  const drawControls = mode === 'SELECT_QUESTIONS' ? (
+    <PdfDrawControls
+      drawType={drawType}
+      onDrawTypeChange={setDrawType}
+      questionRegions={questionRegions}
+      activeQuestionId={activeQuestionId}
+      onActiveQuestionIdChange={setActiveQuestionId}
+    />
+  ) : null;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', overflow: 'hidden' }}>
-
-      {/* Toolbar — hidden in SOLVE mode (floating draw toolbar takes over) */}
+    <div className="app-main" style={{ width: '100%', height: '100%' }}>
       {mode !== 'SOLVE' && (
-        <div className="workspace-toolbar">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            {mode !== 'SELECT_QUESTIONS' && (
-              <button className="btn btn-ghost" onClick={goEdit}>
-                <Settings size={14} /> Düzenle
+        <WorkspaceTopBar
+          docName={displayName}
+          breadcrumbSegments={breadcrumbSegments}
+          mode={mode}
+          onInferSolutions={inferSolutions}
+          onStartSolving={startSolving}
+          canInfer={questionRegions.length > 0}
+          isCropping={isCropping}
+          drawControls={drawControls}
+          saveStatus={saveStatus}
+          rightExtra={(
+            <>
+              <button
+                type="button"
+                className="btn btn-ghost chrome-touch-btn"
+                onClick={undoRegions}
+                disabled={!canUndoRegions}
+                aria-label="Bölge geri al"
+                title="Geri al"
+              >
+                <Undo2 size={16} />
               </button>
-            )}
-            <span className={`step-badge ${mode === 'ADJUST_SOLUTIONS' ? 'step-2' : ''}`}>
-              {mode === 'SELECT_QUESTIONS' && '① Soruları işaretle'}
-              {mode === 'ADJUST_SOLUTIONS' && '② Çözüm alanlarını onayla'}
-            </span>
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            {mode === 'SELECT_QUESTIONS' && (
-              <button className="btn btn-primary" onClick={inferSolutions}
-                disabled={!regions.some(r => r.type === 'question')}>
-                <Settings size={14} /> Alanları Çıkar
+              <button
+                type="button"
+                className="btn btn-ghost chrome-touch-btn"
+                onClick={redoRegions}
+                disabled={!canRedoRegions}
+                aria-label="Bölge yinele"
+                title="Yinele"
+              >
+                <Redo2 size={16} />
               </button>
-            )}
-            {mode === 'ADJUST_SOLUTIONS' && (
-              <button className="btn btn-success" onClick={startSolving} disabled={isCropping}>
-                {isCropping ? <Loader2 size={14} className="spin" /> : <Check size={14} />}
-                {isCropping ? 'Kırpılıyor…' : 'Çözüme Başla'}
+              <button type="button" className="btn btn-ghost chrome-touch-btn" onClick={() => setRegionPanelOpen(v => !v)}>
+                <List size={16} /> Liste
               </button>
-            )}
-          </div>
-        </div>
+            </>
+          )}
+        />
       )}
 
-      {/* Content */}
-      <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
-
-        {/* Loading overlay */}
+      <div style={{ flex: 1, overflow: 'hidden', position: 'relative', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         {isCropping && (
           <div className="loading-overlay">
             <div className="loading-card">
@@ -179,20 +236,60 @@ export const Workspace: React.FC<WorkspaceProps> = ({ doc, onSave, solveLayout }
           </div>
         )}
 
-        {/* Phase 1 & 2 — PDF selection */}
         {mode !== 'SOLVE' && (
-          <div style={{
-            width: '100%', height: '100%', overflow: 'auto',
-            display: 'flex', justifyContent: 'center', alignItems: 'flex-start',
-            background: 'var(--bg-canvas)', padding: 32,
-          }}>
-            <PdfViewer pdfData={doc.pdfData} mode={mode} regions={regions}
-              onRegionsChange={setRegions} showOriginal={false} />
+          <div
+            ref={pdfScrollRef}
+            style={{
+              flex: 1, overflow: 'auto', display: 'flex', justifyContent: 'center',
+              alignItems: 'flex-start', background: 'var(--bg-canvas)', padding: '16px 16px 32px',
+              position: 'relative',
+            }}
+          >
+            {showPinchTip && (
+              <OnboardingTip
+                position="bottom"
+                title="Yakınlaştırma"
+                message="PDF üzerinde iki parmakla sıkıştırarak yakınlaştırıp uzaklaştırabilir; iki parmakla kaydırarak gezinebilirsiniz."
+                onDismiss={() => {
+                  markOnboardingSeen('pdf_pinch');
+                  setShowPinchTip(false);
+                }}
+              />
+            )}
+            {mode === 'SELECT_QUESTIONS' && showDrawTip && (
+              <OnboardingTip
+                position="top"
+                title="Soru alanları çizin"
+                message="PDF üzerinde sürükleyerek soru ve öncül kutuları oluşturun. Üstteki Soru / Öncül sekmesinden tür seçin; alanı silmek için kutuya uzun basın."
+                onDismiss={() => {
+                  markOnboardingSeen('draw_regions');
+                  setShowDrawTip(false);
+                }}
+              />
+            )}
+            <PdfViewer
+              pdfData={doc.pdfData}
+              mode={mode}
+              regions={regions}
+              onRegionsChange={setRegions}
+              onRegionsPreview={setRegionsPreview}
+              showOriginal={false}
+              drawType={drawType}
+              onDrawTypeChange={setDrawType}
+              activeQuestionId={activeQuestionId}
+              onActiveQuestionIdChange={setActiveQuestionId}
+            />
+            <RegionListPanel
+              open={regionPanelOpen}
+              onClose={() => setRegionPanelOpen(false)}
+              regions={regions}
+              activeQuestionId={activeQuestionId}
+              onSelect={r => { focusRegion(r); setRegionPanelOpen(false); }}
+            />
           </div>
         )}
 
-        {/* Phase 3 — Solve View (layout depends on settings) */}
-        {mode === 'SOLVE' && solveLayout === 'document' ? (
+        {mode === 'SOLVE' && appSettings.solveLayout === 'document' && (
           <SolveViewDoc
             questions={questions}
             stems={stems}
@@ -202,23 +299,38 @@ export const Workspace: React.FC<WorkspaceProps> = ({ doc, onSave, solveLayout }
             allStrokes={strokes}
             onStrokesChange={handleStrokesChange}
             onGoEdit={goEdit}
+            docSolutionPlacement={appSettings.docSolutionPlacement ?? 'side'}
+            toolbarDock={appSettings.toolbarDock ?? 'right'}
+            palmDefault={appSettings.palmRejection}
+            docName={displayName}
+            breadcrumbSegments={breadcrumbSegments}
+            onOpenLibrary={onOpenLibrary}
+            saveStatus={saveStatus as SaveStatus}
           />
-        ) : mode === 'SOLVE' ? (
+        )}
+        {mode === 'SOLVE' && appSettings.solveLayout !== 'document' && (
           <SolveView
             questions={questions}
             stems={stems}
             solutions={solutions}
             allStrokes={strokes}
             onStrokesChange={handleStrokesChange}
+            questionStatus={questionStatus}
+            onQuestionStatusChange={handleQuestionStatusChange}
             onGoEdit={goEdit}
+            toolbarDock={appSettings.toolbarDock ?? 'right'}
+            palmDefault={appSettings.palmRejection}
+            defaultBgStyle={appSettings.defaultBgStyle}
+            docName={displayName}
+            breadcrumbSegments={breadcrumbSegments}
+            onOpenLibrary={onOpenLibrary}
+            saveStatus={saveStatus as SaveStatus}
           />
-        ) : null}
+        )}
       </div>
     </div>
   );
 };
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
 
 function imgDims(url: string): Promise<{ width: number; height: number }> {
   return new Promise(res => {

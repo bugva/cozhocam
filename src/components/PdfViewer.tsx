@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { hapticLight, hapticMedium } from '../utils/haptic';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.js?url';
 
@@ -11,6 +12,14 @@ export interface Region {
   w: number;
   h: number;
   type: 'question' | 'solution' | 'stem';
+  /** Öncül / çözüm → hangi soruya bağlı */
+  parentQuestionId?: string;
+  /** Öncül sırası (1, 2, …) — aynı soru altında */
+  stemIndex?: number;
+  /** Çözüm: soru ile öncül veya öncüller arası boşluk (0 = sorudan sonra) */
+  segmentIndex?: number;
+  /** Çözümün hemen üstündeki bölge */
+  afterRegionId?: string;
 }
 
 interface PageInfo {
@@ -25,10 +34,23 @@ interface PdfViewerProps {
   mode?: 'SELECT_QUESTIONS' | 'ADJUST_SOLUTIONS' | 'SOLVE';
   regions?: Region[];
   onRegionsChange?: (regions: Region[]) => void;
+  /** Sürükleme sırasında geçici önizleme (undo kaydı oluşturmaz) */
+  onRegionsPreview?: (regions: Region[]) => void;
   showOriginal?: boolean;
+  drawType?: 'question' | 'stem';
+  onDrawTypeChange?: (t: 'question' | 'stem') => void;
+  activeQuestionId?: string | null;
+  onActiveQuestionIdChange?: (id: string) => void;
 }
 
 import { SCALE, PAGE_GAP } from '../utils/pdfCrop';
+import {
+  assignStemIndices,
+  inferParentQuestionId,
+  migrateRegions,
+  regionLabel,
+  removeQuestionCascade,
+} from '../utils/questionGroups';
 
 /* ── Single page renderer (self-contained, StrictMode safe) ── */
 const PageCanvas: React.FC<{ pdf: pdfjsLib.PDFDocumentProxy; pageNum: number }> = ({ pdf, pageNum }) => {
@@ -128,7 +150,12 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
   mode = 'SELECT_QUESTIONS',
   regions = [],
   onRegionsChange,
+  onRegionsPreview,
   showOriginal = false,
+  drawType: drawTypeProp,
+  onDrawTypeChange,
+  activeQuestionId: activeQuestionIdProp,
+  onActiveQuestionIdChange,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
@@ -138,12 +165,38 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
   const [isDrawing, setIsDrawing] = useState(false);
   const [startPos, setStartPos] = useState({ x: 0, y: 0 });
   const [currentPos, setCurrentPos] = useState({ x: 0, y: 0 });
-  const [drawType, setDrawType] = useState<'question' | 'stem'>('question');
+  const [drawTypeLocal, setDrawTypeLocal] = useState<'question' | 'stem'>('question');
+  const [activeQuestionIdLocal, setActiveQuestionIdLocal] = useState<string | null>(null);
+  const drawType = drawTypeProp ?? drawTypeLocal;
+  const activeQuestionId = activeQuestionIdProp ?? activeQuestionIdLocal;
+  const setActiveQuestionId = onActiveQuestionIdChange ?? setActiveQuestionIdLocal;
+  void onDrawTypeChange;
+  void setDrawTypeLocal;
   const dragRef = useRef<{ id: string; lastY: number; lastX: number } | null>(null);
   const resizeRef = useRef<{ id: string; edge: 'top' | 'bottom'; lastY: number } | null>(null);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const regionsRef = useRef(regions);
   regionsRef.current = regions;
+
+  const applyRegions = (next: Region[], preview = false) => {
+    regionsRef.current = next;
+    if (preview) onRegionsPreview?.(next);
+    else onRegionsChange?.(next);
+  };
+
+  const questionRegions = regions.filter(r => r.type === 'question');
+
+  useEffect(() => {
+    const migrated = migrateRegions(regions);
+    if (JSON.stringify(migrated) !== JSON.stringify(regions)) {
+      onRegionsChange?.(migrated);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (activeQuestionId && questionRegions.some(q => q.id === activeQuestionId)) return;
+    setActiveQuestionId(questionRegions[questionRegions.length - 1]?.id ?? null);
+  }, [questionRegions, activeQuestionId]);
 
   // Load PDF
   useEffect(() => {
@@ -196,12 +249,15 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
     return { x: Math.max(0, Math.min(e.clientX - r.left, r.width)), y: Math.max(0, Math.min(e.clientY - r.top, r.height)) };
   };
 
+  const activeTouches = useRef(0);
+
   const onDown = (e: React.PointerEvent) => {
     if (mode !== 'SELECT_QUESTIONS' && mode !== 'ADJUST_SOLUTIONS') return;
-    // ADJUST_SOLUTIONS modunda drag handle'larını atla
+    // İki parmak dokunuşu = scroll, çizim başlatma
+    if (e.pointerType === 'touch') activeTouches.current++;
+    if (activeTouches.current >= 2) return;
     if ((e.target as HTMLElement).dataset.resizeHandle) return;
     if ((e.target as HTMLElement).closest('button')) return;
-    // Drag halindeyse yeni çizim başlatma
     if (mode === 'ADJUST_SOLUTIONS' && (e.target as HTMLElement).closest('[data-region="true"]')) return;
     const p = getPos(e);
     isDrawingRef.current = true; setIsDrawing(true); setStartPos(p); setCurrentPos(p);
@@ -213,6 +269,7 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
     setCurrentPos(getPos(e));
   };
   const onUp = (e: React.PointerEvent) => {
+    if (e.pointerType === 'touch') activeTouches.current = Math.max(0, activeTouches.current - 1);
     if (!isDrawingRef.current) return;
     if (mode !== 'SELECT_QUESTIONS' && mode !== 'ADJUST_SOLUTIONS') return;
     isDrawingRef.current = false; setIsDrawing(false);
@@ -221,8 +278,24 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
     const x = Math.min(startPos.x, end.x), y = Math.min(startPos.y, end.y);
     const w = Math.abs(end.x - startPos.x), h = Math.abs(end.y - startPos.y);
     if (w > 8 && h > 8 && onRegionsChange) {
+      hapticLight();
       if (mode === 'SELECT_QUESTIONS') {
-        onRegionsChange([...regions, { id: `${drawType}-${Date.now()}`, x, y, w, h, type: drawType }]);
+        if (drawType === 'question') {
+          const id = `question-${Date.now()}`;
+          const next = assignStemIndices([...regions, { id, x, y, w, h, type: 'question' }]);
+          onRegionsChange(next);
+          setActiveQuestionId(id);
+        } else {
+          const parentId =
+            activeQuestionId ?? inferParentQuestionId(regions, y);
+          if (!parentId) return;
+          const id = `stem-${Date.now()}`;
+          const next = assignStemIndices([
+            ...regions,
+            { id, x, y, w, h, type: 'stem', parentQuestionId: parentId },
+          ]);
+          onRegionsChange(next);
+        }
       } else {
         // ADJUST_SOLUTIONS: yeni çözüm alanı — serbest boyut, hiçbir kısıtlama yok
         const solId = `sol-${Date.now()}`;
@@ -231,12 +304,41 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
     }
   };
 
-  const removeRegion = (id: string, e: React.MouseEvent) => {
-    e.preventDefault(); e.stopPropagation();
-    onRegionsChange?.(regions.filter(r => r.id !== id));
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearLongPress = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
   };
 
-  const questionRegions = regions.filter(r => r.type === 'question');
+  const deleteRegionById = (id: string) => {
+    const target = regionsRef.current.find(r => r.id === id);
+    if (!target) return;
+    const next =
+      target.type === 'question'
+        ? assignStemIndices(removeQuestionCascade(regionsRef.current, id))
+        : assignStemIndices(regionsRef.current.filter(r => r.id !== id));
+    onRegionsChange?.(next);
+    if (activeQuestionId === id) {
+      const qs = next.filter(r => r.type === 'question');
+      setActiveQuestionId(qs[qs.length - 1]?.id ?? null);
+    }
+  };
+
+  const startLongPressDelete = (id: string) => {
+    clearLongPress();
+    longPressTimerRef.current = window.setTimeout(() => {
+      deleteRegionById(id);
+      hapticMedium();
+    }, 550);
+  };
+
+  const removeRegion = (id: string, e: React.MouseEvent) => {
+    e.preventDefault(); e.stopPropagation();
+    deleteRegionById(id);
+  };
 
   return (
     <div style={{ position: 'relative', display: 'inline-block', userSelect: 'none' }}>
@@ -246,38 +348,14 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
         </div>
       )}
 
-      {/* Draw mode toolbar (SELECT_QUESTIONS only) */}
-      {mode === 'SELECT_QUESTIONS' && (
-        <div style={{
-          position: 'sticky', top: 0, zIndex: 100,
-          display: 'flex', gap: 6, padding: '8px 12px',
-          background: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(12px)',
-          borderBottom: '1px solid rgba(0,0,0,0.08)',
-        }}>
-          {([
-            { t: 'question' as const, label: '① Soru Seç', color: '#34c759' },
-            { t: 'stem' as const, label: '② Öncül Ekle', color: '#ff9f0a' },
-          ] as const).map(item => (
-            <button key={item.t} onClick={() => setDrawType(item.t)} style={{
-              padding: '5px 14px', borderRadius: 8, border: `1.5px solid ${drawType === item.t ? item.color : 'rgba(0,0,0,0.12)'}`,
-              background: drawType === item.t ? `${item.color}18` : 'transparent',
-              color: drawType === item.t ? item.color : '#666',
-              fontWeight: 700, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
-              transition: 'all 0.15s',
-            }}>{item.label}</button>
-          ))}
-          <span style={{ fontSize: 11, color: '#999', alignSelf: 'center', marginLeft: 6 }}>
-            {drawType === 'question' ? 'Soru bölgesini çizmek için sürükle' : 'Öncül/Bağlam metni için sürükle'}
-          </span>
-        </div>
-      )}
 
       <div
         ref={containerRef}
         style={{
           position: 'relative', width: docWidth || 'auto', height: totalHeight || 'auto',
           cursor: (mode === 'SELECT_QUESTIONS' || mode === 'ADJUST_SOLUTIONS') ? 'crosshair' : 'default',
-          touchAction: (mode === 'SELECT_QUESTIONS' || mode === 'ADJUST_SOLUTIONS') ? 'none' : 'pan-y',
+          // İki parmak scroll için pan-y'e izin ver; tek parmak çizim touchAction:none yapar
+          touchAction: (mode === 'SELECT_QUESTIONS' || mode === 'ADJUST_SOLUTIONS') ? 'pan-y' : 'pan-y',
         }}
         onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp}
       >
@@ -313,16 +391,19 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
           const isQ = region.type === 'question';
           const isStem = region.type === 'stem';
           const isSol = region.type === 'solution';
-          const qIdx = isQ ? questionRegions.indexOf(region) : -1;
           const color = isQ ? '#34c759' : isStem ? '#ff9f0a' : '#ff453a';
           const bg = isQ ? 'rgba(52,199,89,0.10)' : isStem ? 'rgba(255,159,10,0.08)' : 'rgba(255,69,58,0.08)';
-          const label = isQ ? `Soru ${qIdx + 1}` : isStem ? 'Öncül' : 'Çözüm ↕ sürükle';
+          const label = regionLabel(region, questionRegions);
+          const solHint = isSol ? ' ↕ sürükle' : '';
           const isDraggable = mode === 'ADJUST_SOLUTIONS' && isSol;
+
+          const tagClass = isQ ? 'region-tag--question' : isStem ? 'region-tag--stem' : 'region-tag--solution';
 
           return (
             <div
               key={region.id}
               data-region="true"
+              className="region-overlay"
               style={{
                 position: 'absolute',
                 left: isQ || isStem ? region.x : 0,
@@ -330,11 +411,17 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
                 width: isQ || isStem ? region.w : '100%',
                 height: region.h,
                 border: `2px solid ${color}`, backgroundColor: bg,
-                zIndex: 15, borderRadius: 4, pointerEvents: 'all',
+                zIndex: 15, pointerEvents: 'all',
                 cursor: isDraggable ? (activeDragId === region.id ? 'grabbing' : 'grab') : 'default',
               }}
-              onPointerDown={isDraggable ? (e) => {
+              onPointerDown={(e) => {
+                if ((e.target as HTMLElement).closest('.region-delete')) return;
                 if ((e.target as HTMLElement).dataset.resizeHandle) return;
+                if (!isDraggable) {
+                  e.stopPropagation();
+                  startLongPressDelete(region.id);
+                  return;
+                }
                 e.stopPropagation();
                 e.currentTarget.setPointerCapture(e.pointerId);
                 dragRef.current = { id: region.id, lastY: e.clientY, lastX: e.clientX };
@@ -344,33 +431,38 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
                   if (!dragRef.current || dragRef.current.id !== region.id) return;
                   const dy = ev.clientY - dragRef.current.lastY;
                   dragRef.current.lastY = ev.clientY;
-                  onRegionsChange?.(regionsRef.current.map(r =>
+                  applyRegions(regionsRef.current.map(r =>
                     r.id !== region.id ? r : { ...r, y: Math.max(0, r.y + dy) }
-                  ));
+                  ), true);
                 };
                 const onUp = () => {
                   dragRef.current = null;
                   setActiveDragId(null);
+                  applyRegions(regionsRef.current);
                   window.removeEventListener('pointermove', onMv);
                   window.removeEventListener('pointerup', onUp);
                 };
                 window.addEventListener('pointermove', onMv);
                 window.addEventListener('pointerup', onUp);
-              } : undefined}
+              }}
+              onPointerUp={clearLongPress}
+              onPointerCancel={clearLongPress}
+              onPointerMove={e => {
+                if (longPressTimerRef.current && (Math.abs(e.movementX) > 4 || Math.abs(e.movementY) > 4)) {
+                  clearLongPress();
+                }
+              }}
             >
-              <span style={{ position: 'absolute', top: 4, left: 8, fontSize: 11, fontWeight: 700, color, pointerEvents: 'none', userSelect: 'none' }}>
-                {label}
+              <span className={`region-tag ${tagClass}`}>
+                {label}{solHint}
               </span>
               <button
+                type="button"
+                className="region-delete"
                 onPointerDown={e => e.stopPropagation()}
                 onClick={e => removeRegion(region.id, e)}
-                style={{
-                  position: 'absolute', top: -11, right: -11, width: 22, height: 22,
-                  borderRadius: '50%', background: '#fff', border: `2px solid ${color}`,
-                  color, fontWeight: 700, fontSize: 14, cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  zIndex: 30, padding: 0, boxShadow: '0 2px 6px rgba(0,0,0,0.15)',
-                }}
+                style={{ border: `2px solid ${color}`, color }}
+                aria-label="Bölgeyi sil"
               >×</button>
 
               {mode === 'ADJUST_SOLUTIONS' && isSol && (['top','bottom'] as const).map(edge => (
@@ -387,15 +479,16 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
                     if (!resizeRef.current || resizeRef.current.id !== region.id) return;
                     const d = ev.clientY - resizeRef.current.lastY;
                     resizeRef.current.lastY = ev.clientY;
-                    onRegionsChange?.(regionsRef.current.map(r => {
+                    applyRegions(regionsRef.current.map(r => {
                       if (r.id !== region.id) return r;
                       return edge === 'top'
                         ? { ...r, y: r.y + d, h: Math.max(r.h - d, 20) }
                         : { ...r, h: Math.max(r.h + d, 20) };
-                    }));
+                    }), true);
                   };
                   const onUp = () => {
                     resizeRef.current = null;
+                    applyRegions(regionsRef.current);
                     window.removeEventListener('pointermove', onMv);
                     window.removeEventListener('pointerup', onUp);
                   };

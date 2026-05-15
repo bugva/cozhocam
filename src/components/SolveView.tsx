@@ -1,5 +1,5 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { Pencil, Eraser, Trash2, Eye, EyeOff, Hand, Minus, Plus, Highlighter, PenLine, Grid3x3, Square, CheckCircle2, XCircle } from 'lucide-react';
+import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
+import { Trash2, Eye, EyeOff, Grid3x3, Square, CheckCircle2, XCircle } from 'lucide-react';
 import { SCALE } from '../utils/pdfCrop';
 
 const A4_W = 794;
@@ -12,9 +12,30 @@ type Tool = 'pencil' | 'pen' | 'highlighter' | 'eraser';
 
 interface StrokePoint { x: number; y: number; p: number; }
 interface StrokeData { tool: Tool; color: string; baseSize: number; points: StrokePoint[]; }
-interface CroppedItem { regionId: string; type: 'question' | 'solution' | 'stem'; dataUrl: string; width: number; height: number; questionIndex: number; sortY?: number; }
+import type { CroppedItem, QuestionAnswerStatus } from '../utils/db';
+import { buildSolveFlow } from '../utils/questionGroups';
+
+function strokeKey(item: CroppedItem): number {
+  if (item.type === 'stem') return item.questionIndex * 1000 + (item.stemIndex ?? 1);
+  return item.questionIndex;
+}
 
 type QuestionStatus = 'correct' | 'wrong' | null;
+
+import type { ToolbarDock, BgStyle as SettingsBgStyle } from '../utils/settings';
+import { DrawToolbar, type DrawTool } from './shell/DrawToolbar';
+import { ZoomControls } from './shell/ZoomControls';
+import { QuestionNavigator } from './shell/QuestionNavigator';
+import { Breadcrumb } from './shell/Breadcrumb';
+import { OnboardingTip } from './shell/OnboardingTip';
+import { usePerKeyStrokeHistory } from '../hooks/usePerKeyStrokeHistory';
+import { hasSeenOnboarding, markOnboardingSeen } from '../utils/onboarding';
+import { SolveChromeActions } from './shell/SolveChromeActions';
+import { SolveProgressSummary } from './shell/SolveProgressSummary';
+import { ClassicThumbZone } from './shell/ClassicThumbZone';
+import { hapticLight } from '../utils/haptic';
+import type { SaveStatus } from './shell/SaveIndicator';
+import { useApplePencilGestures } from '../hooks/useApplePencilGestures';
 
 interface SolveViewProps {
   questions: CroppedItem[];
@@ -23,6 +44,15 @@ interface SolveViewProps {
   allStrokes: Record<number, StrokeData[]>;
   onStrokesChange: (qi: number, strokes: StrokeData[]) => void;
   onGoEdit?: () => void;
+  toolbarDock: ToolbarDock;
+  palmDefault: boolean;
+  defaultBgStyle: SettingsBgStyle;
+  docName: string;
+  breadcrumbSegments?: string[];
+  onOpenLibrary?: () => void;
+  saveStatus?: SaveStatus;
+  questionStatus?: Record<number, QuestionAnswerStatus>;
+  onQuestionStatusChange?: (key: number, status: QuestionAnswerStatus | null) => void;
 }
 
 type BgStyle = 'plain' | 'grid';
@@ -81,10 +111,47 @@ function redrawCanvas(ctx: CanvasRenderingContext2D, strokes: StrokeData[], w: n
 
 // ── Question Card ─────────────────────────────────────────────────────────
 
+const SolutionBetweenCard: React.FC<{
+  item: CroppedItem;
+  questionNumber: number;
+  segmentIndex: number;
+  showSolOverride?: boolean;
+}> = ({ item, questionNumber, segmentIndex, showSolOverride }) => {
+  const [show, setShow] = useState(false);
+  const visible = showSolOverride ?? show;
+  const label =
+    segmentIndex === 0
+      ? `Soru ${questionNumber} — cevap alanı`
+      : `Öncül ${segmentIndex} sonrası cevap`;
+
+  return (
+    <div className="solve-gap-card">
+      <div className="solve-gap-card-header">
+        <span className="solve-gap-card-title">{label}</span>
+        <button
+          type="button"
+          className={`solve-gap-toggle${visible ? ' is-visible' : ' is-hidden'}`}
+          onClick={() => setShow(v => !v)}
+        >
+          {visible ? <EyeOff size={11} /> : <Eye size={11} />}
+          {visible ? 'Gizle' : 'Cevabı Gör'}
+        </button>
+      </div>
+      <div style={{
+        overflow: 'hidden', maxHeight: visible ? 2000 : 0, opacity: visible ? 1 : 0,
+        transition: 'max-height 0.4s ease, opacity 0.25s',
+      }}>
+        <img src={item.dataUrl} alt={label} draggable={false} style={{ width: '100%', display: 'block', background: '#fff' }} />
+      </div>
+    </div>
+  );
+};
+
 const QuestionCard: React.FC<{
-  item: CroppedItem;        // soru VEYA öncül
-  isQuestion: boolean;      // true→ numara göster, false→ "Öncül"
-  questionNumber?: number;  // sadece isQuestion=true
+  item: CroppedItem;
+  isQuestion: boolean;
+  questionNumber: number;
+  stemIndex?: number;
   solution?: CroppedItem;
   strokes: StrokeData[];
   onStrokesChange: (s: StrokeData[]) => void;
@@ -92,7 +159,9 @@ const QuestionCard: React.FC<{
   bgStyle: BgStyle;
   zoom: number;
   showSolOverride?: boolean;
-}> = ({ item, isQuestion, questionNumber, solution, strokes, onStrokesChange, palmRejection, bgStyle, zoom, showSolOverride }) => {
+  answerStatus?: QuestionAnswerStatus | null;
+  onAnswerStatusChange?: (status: QuestionAnswerStatus | null) => void;
+}> = ({ item, isQuestion, questionNumber, stemIndex, solution, strokes, onStrokesChange, palmRejection, bgStyle, zoom, showSolOverride, answerStatus = null, onAnswerStatusChange }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const offRef = useRef<HTMLCanvasElement | null>(null);
   const activeStroke = useRef<StrokeData | null>(null);
@@ -104,7 +173,11 @@ const QuestionCard: React.FC<{
     const next = typeof v === 'function' ? v(showSolLocal) : v;
     setShowSolLocal(next);
   };
-  const [status, setStatus] = useState<QuestionStatus>(null);
+  const status = answerStatus;
+  const setStatus = (next: QuestionStatus | ((prev: QuestionStatus) => QuestionStatus)) => {
+    const resolved = typeof next === 'function' ? next(status) : next;
+    onAnswerStatusChange?.(resolved);
+  };
   const [answerH, setAnswerH] = useState(ANSWER_HEIGHT);
   const resizing = useRef(false);
   const resizeStart = useRef({ y: 0, h: ANSWER_HEIGHT });
@@ -177,7 +250,7 @@ const QuestionCard: React.FC<{
   const ignore = (e: React.PointerEvent) => palmRejection && e.pointerType === 'touch';
 
   const onDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (ignore(e)) return;
+    if (ignore(e) || e.button !== 0) return;
     (e.target as Element).setPointerCapture(e.pointerId);
     drawing.current = true;
     activeStroke.current = { tool: G.tool, color: G.color, baseSize: G.baseSize, points: [coord(e)] };
@@ -226,28 +299,33 @@ const QuestionCard: React.FC<{
           ) : (
             <>
               <div style={{ width: 16, height: 16, borderRadius: 4, background: 'linear-gradient(135deg,#ff9f0a,#ff6b00)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <span style={{ fontSize: 8, fontWeight: 800, color: '#fff' }}>Ö</span>
+                <span style={{ fontSize: 8, fontWeight: 800, color: '#fff' }}>{stemIndex ?? 1}</span>
               </div>
-              <span style={{ fontSize: 10, fontWeight: 700, color: '#ff9f0a', letterSpacing: '0.06em', textTransform: 'uppercase' }}>Öncül</span>
+              <span style={{ fontSize: 10, fontWeight: 700, color: '#ff9f0a', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                Soru {questionNumber} · Öncül {stemIndex ?? 1}
+              </span>
             </>
           )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          {/* Correct / Wrong status */}
+          {onAnswerStatusChange && (
+          <>
           <button
-            onClick={() => setStatus(s => s === 'correct' ? null : 'correct')}
+            onClick={() => { hapticLight(); setStatus(s => s === 'correct' ? null : 'correct'); }}
             title="Doğru"
             style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '3px 9px', borderRadius: 20, border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 10, fontWeight: 700,
               background: status === 'correct' ? 'rgba(48,209,88,0.18)' : 'rgba(255,255,255,0.05)',
               color: status === 'correct' ? '#30d158' : 'rgba(255,255,255,0.25)', transition: 'all 0.2s' }}
           ><CheckCircle2 size={11} /> Doğru</button>
           <button
-            onClick={() => setStatus(s => s === 'wrong' ? null : 'wrong')}
+            onClick={() => { hapticLight(); setStatus(s => s === 'wrong' ? null : 'wrong'); }}
             title="Yanlış"
             style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '3px 9px', borderRadius: 20, border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 10, fontWeight: 700,
               background: status === 'wrong' ? 'rgba(255,69,58,0.18)' : 'rgba(255,255,255,0.05)',
               color: status === 'wrong' ? '#ff453a' : 'rgba(255,255,255,0.25)', transition: 'all 0.2s' }}
           ><XCircle size={11} /> Yanlış</button>
+          </>
+          )}
           {solution && (
             <button onClick={() => setShowSol(v => !v)} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 10px', borderRadius: 20, border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 10, fontWeight: 600, background: showSol ? 'rgba(255,69,58,0.15)' : 'rgba(48,209,88,0.12)', color: showSol ? '#ff453a' : '#30d158', transition: 'all 0.15s' }}>
               {showSol ? <EyeOff size={10} /> : <Eye size={10} />} {showSol ? 'Gizle' : 'Çözümü Gör'}
@@ -333,177 +411,36 @@ const QuestionCard: React.FC<{
           touchAction: 'none',
           userSelect: 'none',
         }}
-        title="Sürükleyerek boyutlandır"
       >
-        <div style={{ width: 36, height: 3, borderRadius: 2, background: 'rgba(255,255,255,0.15)' }} />
+        <Square size={10} style={{ color: 'rgba(255,255,255,0.2)', transform: 'rotate(45deg)' }} />
       </div>
     </div>
   );
 };
 
-// ── Draggable Floating Toolbar ────────────────────────────────────────────
-
-const TOOLS: { id: Tool; icon: React.ReactNode; label: string; activeColor: string }[] = [
-  { id: 'pencil', icon: <Pencil size={14} />, label: 'Kalem', activeColor: '#0a84ff' },
-  { id: 'pen', icon: <PenLine size={14} />, label: 'Pen', activeColor: '#5e5ce6' },
-  { id: 'highlighter', icon: <Highlighter size={14} />, label: 'İşaretçi', activeColor: '#ffd60a' },
-  { id: 'eraser', icon: <Eraser size={14} />, label: 'Silgi', activeColor: '#ff453a' },
-];
-
-const COLORS = [
-  '#e8e8ed', '#0a84ff', '#ff453a', '#30d158', '#ffd60a', '#bf5af2', '#ff9f0a', '#ff375f',
-];
-
-
-const FloatingToolbar: React.FC<{
-  tool: Tool; color: string; palmRejection: boolean; bgStyle: BgStyle; size: number;
-  onTool: (t: Tool) => void; onColor: (c: string) => void;
-  onPalmToggle: () => void; onBgToggle: () => void; onSize: (s: number) => void;
-  onGoEdit?: () => void;
-}> = ({ tool, color, palmRejection, bgStyle, size, onTool, onColor, onPalmToggle, onBgToggle, onSize, onGoEdit }) => {
-  const [visible, setVisible] = useState(true);
-  const activeToolColor = TOOLS.find(t => t.id === tool)?.activeColor ?? '#0a84ff';
-
-  return (
-    <>
-      {!visible && (
-        <button onClick={() => setVisible(true)} style={{
-          position: 'fixed', top: 14, left: '50%', transform: 'translateX(-50%)', zIndex: 10000,
-          border: 'none', cursor: 'pointer',
-          background: 'rgba(20,20,24,0.95)', backdropFilter: 'blur(20px)',
-          color: '#0a84ff', padding: '8px 18px', borderRadius: 14,
-          fontSize: 12, fontWeight: 700, fontFamily: 'inherit',
-          display: 'flex', alignItems: 'center', gap: 6,
-          boxShadow: '0 8px 32px rgba(0,0,0,0.6), 0 1px 0 rgba(255,255,255,0.08) inset',
-          transition: 'all 0.25s cubic-bezier(0.34,1.56,0.64,1)',
-        }}>
-          <Pencil size={13} /> Araç Paneli
-        </button>
-      )}
-      {visible && (
-        <div style={{
-          position: 'fixed', top: 14, left: '50%', transform: 'translateX(-50%)',
-          zIndex: 9999, userSelect: 'none',
-        }}>
-          <div style={{
-            background: 'linear-gradient(180deg, rgba(38,38,42,0.98) 0%, rgba(22,22,26,0.98) 100%)',
-            backdropFilter: 'blur(40px) saturate(200%)',
-            WebkitBackdropFilter: 'blur(40px) saturate(200%)',
-            border: '1px solid rgba(255,255,255,0.12)',
-            borderTop: '1px solid rgba(255,255,255,0.18)',
-            borderRadius: 22,
-            boxShadow: '0 24px 80px rgba(0,0,0,0.75), 0 8px 24px rgba(0,0,0,0.4), 0 1px 0 rgba(255,255,255,0.08) inset, 0 -1px 0 rgba(0,0,0,0.3) inset',
-            display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px',
-          }}>
-            {onGoEdit && (<>
-              <button onClick={onGoEdit} style={{
-                display: 'flex', alignItems: 'center', gap: 5,
-                padding: '6px 12px', borderRadius: 10, border: 'none', cursor: 'pointer',
-                background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.6)',
-                fontSize: 11, fontWeight: 700, fontFamily: 'inherit', transition: 'all 0.18s',
-              }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.14)'; (e.currentTarget as HTMLElement).style.color = '#fff'; }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.08)'; (e.currentTarget as HTMLElement).style.color = 'rgba(255,255,255,0.6)'; }}
-              >\u2190 D\u00fczenle</button>
-              <div style={{ width: 1, height: 28, background: 'rgba(255,255,255,0.08)' }} />
-            </>)}
-            {TOOLS.map(t => (
-              <button key={t.id} title={t.label} onClick={() => onTool(t.id)} style={{
-                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3,
-                width: 48, padding: '6px 0', borderRadius: 12, border: 'none', cursor: 'pointer',
-                background: tool === t.id ? `${t.activeColor}22` : 'transparent',
-                color: tool === t.id ? t.activeColor : 'rgba(255,255,255,0.4)',
-                transition: 'all 0.18s cubic-bezier(0.34,1.56,0.64,1)',
-                boxShadow: tool === t.id ? `0 0 0 1.5px ${t.activeColor}55` : 'none',
-                transform: tool === t.id ? 'scale(1.06)' : 'scale(1)',
-              }}>
-                {t.icon}
-                <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.04em' }}>{t.label}</span>
-              </button>
-            ))}
-            <div style={{ width: 1, height: 28, background: 'rgba(255,255,255,0.08)' }} />
-            <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
-              {COLORS.map(c => (
-                <button key={c} onClick={() => onColor(c)} style={{
-                  width: tool === 'eraser' ? 16 : (color === c ? 22 : 16),
-                  height: tool === 'eraser' ? 16 : (color === c ? 22 : 16),
-                  borderRadius: '50%', background: c, border: 'none', cursor: 'pointer', padding: 0,
-                  outline: color === c && tool !== 'eraser' ? `2px solid ${c}` : 'none', outlineOffset: 2,
-                  transition: 'all 0.18s cubic-bezier(0.34,1.56,0.64,1)',
-                  boxShadow: color === c && tool !== 'eraser' ? `0 0 8px ${c}88` : 'inset 0 0 0 0.5px rgba(0,0,0,0.3)',
-                  opacity: tool === 'eraser' ? 0.35 : 1,
-                }} />
-              ))}
-            </div>
-            <div style={{ width: 1, height: 28, background: 'rgba(255,255,255,0.08)' }} />
-            <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '0 4px' }}>
-              <div style={{
-                width: Math.max(6, size * 1.4), height: Math.max(6, size * 1.4),
-                borderRadius: '50%', flexShrink: 0,
-                background: tool === 'eraser' ? '#ff453a' : color,
-                boxShadow: `0 0 8px ${tool === 'eraser' ? '#ff453a' : color}88`,
-                transition: 'all 0.15s',
-              }} />
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                <span style={{ fontSize: 8, fontWeight: 700, color: 'rgba(255,255,255,0.28)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                  {tool === 'eraser' ? 'Silgi' : 'U\u00e7'}
-                </span>
-                <input type="range" min={1} max={24} step={1} value={size}
-                  onChange={e => onSize(Number(e.target.value))}
-                  style={{ width: 72, accentColor: tool === 'eraser' ? '#ff453a' : activeToolColor, cursor: 'pointer', margin: 0 }}
-                />
-                <span style={{ fontSize: 8, fontWeight: 600, color: 'rgba(255,255,255,0.35)', textAlign: 'center' }}>{size}px</span>
-              </div>
-            </div>
-            <div style={{ width: 1, height: 28, background: 'rgba(255,255,255,0.08)' }} />
-            <button onClick={onBgToggle} style={{
-              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3,
-              width: 44, padding: '6px 0', borderRadius: 12, border: 'none', cursor: 'pointer',
-              background: bgStyle === 'grid' ? 'rgba(255,214,10,0.15)' : 'transparent',
-              color: bgStyle === 'grid' ? '#ffd60a' : 'rgba(255,255,255,0.28)',
-              transition: 'all 0.18s', boxShadow: bgStyle === 'grid' ? '0 0 0 1.5px rgba(255,214,10,0.35)' : 'none',
-            }}>
-              {bgStyle === 'grid' ? <Grid3x3 size={15} /> : <Square size={15} />}
-              <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.04em' }}>Arka</span>
-            </button>
-            <button onClick={onPalmToggle} style={{
-              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3,
-              width: 44, padding: '6px 0', borderRadius: 12, border: 'none', cursor: 'pointer',
-              background: palmRejection ? 'rgba(10,132,255,0.15)' : 'transparent',
-              color: palmRejection ? '#0a84ff' : 'rgba(255,255,255,0.25)',
-              transition: 'all 0.18s', boxShadow: palmRejection ? '0 0 0 1.5px rgba(10,132,255,0.35)' : 'none',
-            }}>
-              <Hand size={15} />
-              <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.04em' }}>El</span>
-            </button>
-            <div style={{ width: 1, height: 28, background: 'rgba(255,255,255,0.08)' }} />
-            <button onClick={() => setVisible(false)} title="Paneli Gizle" style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              width: 28, height: 28, borderRadius: 8, border: 'none', cursor: 'pointer',
-              background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.3)',
-              transition: 'all 0.18s', fontSize: 11, fontWeight: 700,
-            }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = '#ff453a'; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = 'rgba(255,255,255,0.3)'; }}
-            >\u2715</button>
-          </div>
-        </div>
-      )}
-    </>
-  );
-};
-
 // ── Main SolveView ────────────────────────────────────────────────────────
 
-export const SolveView: React.FC<SolveViewProps> = ({ questions, stems = [], solutions, allStrokes, onStrokesChange, onGoEdit }) => {
+export const SolveView: React.FC<SolveViewProps> = ({
+  questions, stems = [], solutions, allStrokes, onStrokesChange, onGoEdit,
+  toolbarDock, palmDefault, defaultBgStyle, docName, breadcrumbSegments = [],
+  onOpenLibrary, saveStatus, questionStatus = {}, onQuestionStatusChange,
+}) => {
   const [tool, setTool] = useState<Tool>('pencil');
   const [color, setColor] = useState('#e8e8ed');
   const [size, setSize] = useState(2);
-  const [palmRejection, setPalmRejection] = useState(true);
-  const [bgStyle, setBgStyle] = useState<BgStyle>('plain');
+  const [palmRejection, setPalmRejection] = useState(palmDefault);
+  const [bgStyle, setBgStyle] = useState<BgStyle>(defaultBgStyle);
   const [zoom, setZoom] = useState(1);
   const [showAllSol, setShowAllSol] = useState(false);
+  const [flowIndex, setFlowIndex] = useState(0);
+  const [filterWrongOnly, setFilterWrongOnly] = useState(false);
+  const [cardSolShown, setCardSolShown] = useState(false);
   const [, tick] = useState(0);
+  const [showDockTip, setShowDockTip] = useState(() => !hasSeenOnboarding('solve_dock'));
+  const chromeRootRef = useRef<HTMLDivElement>(null);
+  const toolBeforeEraserRef = useRef<Tool>('pencil');
+
+  const { commit, undo, redo, canUndo, canRedo, setFocusKey } = usePerKeyStrokeHistory(allStrokes, onStrokesChange);
 
   // Touch tracking for pinch+pan
   const touches = useRef<Map<number, { x: number; y: number }>>(new Map());
@@ -518,8 +455,16 @@ export const SolveView: React.FC<SolveViewProps> = ({ questions, stems = [], sol
   const applySize = useCallback((s: number) => { G.baseSize = s; setSize(s); tick(n => n + 1); }, []);
   const toggleBg = useCallback(() => { const next: BgStyle = bgStyle === 'plain' ? 'grid' : 'plain'; G.bg = next; setBgStyle(next); }, [bgStyle]);
 
-  // Soru + öncüller PDF sırasıyla (sortY), birlikte tek liste
-  const sortedItems = [...questions, ...stems].sort((a, b) => (a.sortY ?? a.questionIndex) - (b.sortY ?? b.questionIndex));
+  const togglePenEraser = useCallback(() => {
+    if (tool === 'eraser') {
+      applyTool(toolBeforeEraserRef.current);
+    } else {
+      toolBeforeEraserRef.current = tool;
+      applyTool('eraser');
+    }
+  }, [tool, applyTool]);
+
+  const solveFlow = buildSolveFlow(questions, stems, solutions);
 
   // ── Wheel zoom — direct DOM, no re-render ──
   const onWheel = useCallback((e: React.WheelEvent) => {
@@ -579,92 +524,203 @@ export const SolveView: React.FC<SolveViewProps> = ({ questions, stems = [], sol
   const zoomOut   = () => { const z = Math.max(MIN_ZOOM, +(zoomRef.current - 0.15).toFixed(2)); zoomRef.current = z; setZoom(z); if (contentRef.current) contentRef.current.style.transform = `scale(${z})`; };
   const zoomReset = () => { zoomRef.current = 1; setZoom(1); if (contentRef.current) contentRef.current.style.transform = 'scale(1)'; };
 
+  const contentEntries = solveFlow.filter(e => e.kind === 'content');
+  const contentKeys = useMemo(
+    () => contentEntries.map(e => (e.kind === 'content' ? strokeKey(e.item) : 0)),
+    [contentEntries],
+  );
+  const totalQ = contentEntries.length;
+
+  const visibleFlow = useMemo(() => {
+    if (!filterWrongOnly) return solveFlow;
+    return solveFlow.filter(entry => {
+      if (entry.kind !== 'content') return false;
+      return questionStatus[strokeKey(entry.item)] === 'wrong';
+    });
+  }, [solveFlow, filterWrongOnly, questionStatus]);
+
+  const visibleContentEntries = useMemo(
+    () => visibleFlow.filter((e): e is Extract<typeof e, { kind: 'content' }> => e.kind === 'content'),
+    [visibleFlow],
+  );
+  const visibleTotalQ = visibleContentEntries.length;
+
+  useEffect(() => {
+    if (flowIndex >= visibleTotalQ) setFlowIndex(Math.max(0, visibleTotalQ - 1));
+  }, [visibleTotalQ, flowIndex]);
+
+  useEffect(() => {
+    const entry = visibleContentEntries[flowIndex];
+    if (entry) setFocusKey(strokeKey(entry.item));
+  }, [flowIndex, visibleContentEntries, setFocusKey]);
+
+  const activeRegionId = visibleContentEntries[flowIndex]?.item.regionId;
+
+  const onSqueezeToggle = useCallback(() => {
+    hapticLight();
+    if (visibleTotalQ > 0) setCardSolShown(v => !v);
+  }, [visibleTotalQ]);
+
+  useApplePencilGestures({
+    targetRef: chromeRootRef,
+    onToggleEraser: togglePenEraser,
+    onSqueezeToggle,
+  });
+
   return (
-    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: 'linear-gradient(180deg, #111118 0%, #0a0a0e 100%)', position: 'relative', fontFamily: '-apple-system, "SF Pro Text", "Inter", sans-serif' }}>
-
-      {/* Top action bar */}
-      {solutions.length > 0 && (
-        <div style={{
-          position: 'absolute', top: 16, left: '50%', transform: 'translateX(-50%)',
-          zIndex: 9990, display: 'flex', gap: 8,
-        }}>
-          <button
-            onClick={() => setShowAllSol(v => !v)}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              padding: '7px 18px', borderRadius: 24, cursor: 'pointer',
-              fontFamily: 'inherit', fontSize: 12, fontWeight: 700,
-              background: showAllSol ? 'rgba(255,159,10,0.25)' : 'rgba(255,255,255,0.08)',
-              color: showAllSol ? '#ff9f0a' : 'rgba(255,255,255,0.6)',
-              backdropFilter: 'blur(16px)',
-              border: `1px solid ${showAllSol ? 'rgba(255,159,10,0.4)' : 'rgba(255,255,255,0.1)'}`,
-              boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
-              transition: 'all 0.2s',
-            }}
-          >
-            {showAllSol ? <EyeOff size={13} /> : <Eye size={13} />}
-            {showAllSol ? 'Tüm Çözümleri Gizle' : 'Tüm Çözümleri Gör'}
-          </button>
-        </div>
-      )}
-
-      <FloatingToolbar
-        tool={tool} color={color} palmRejection={palmRejection} bgStyle={bgStyle} size={size}
-        onTool={applyTool} onColor={applyColor} onPalmToggle={() => setPalmRejection(v => !v)} onBgToggle={toggleBg} onSize={applySize}
-        onGoEdit={onGoEdit}
-      />
-
-      {/* Zoom pill — bottom right */}
-      <div style={{ position: 'fixed', bottom: 24, right: 24, zIndex: 9998, display: 'flex', alignItems: 'center', gap: 3, background: 'rgba(22,22,26,0.95)', backdropFilter: 'blur(20px)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 14, padding: '4px 6px', boxShadow: '0 8px 32px rgba(0,0,0,0.6)' }}>
-        <button onClick={zoomOut} style={{ width: 28, height: 28, borderRadius: 8, border: 'none', background: 'none', cursor: 'pointer', color: '#636366', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'color 0.15s' }} onMouseEnter={e => (e.currentTarget.style.color = '#fff')} onMouseLeave={e => (e.currentTarget.style.color = '#636366')}><Minus size={13} /></button>
-        <button onClick={zoomReset} style={{ minWidth: 46, height: 28, borderRadius: 8, border: 'none', background: 'rgba(255,255,255,0.06)', cursor: 'pointer', color: '#e8e8ed', fontSize: 11, fontWeight: 700, fontFamily: 'inherit', letterSpacing: '0.02em' }}>{Math.round(zoom * 100)}%</button>
-        <button onClick={zoomIn}  style={{ width: 28, height: 28, borderRadius: 8, border: 'none', background: 'none', cursor: 'pointer', color: '#636366', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'color 0.15s' }} onMouseEnter={e => (e.currentTarget.style.color = '#fff')} onMouseLeave={e => (e.currentTarget.style.color = '#636366')}><Plus size={13} /></button>
-      </div>
-
-      {/* Scrollable + pinch-zoomable viewport */}
-      <div
-        ref={scrollRef}
-        onWheel={onWheel}
-        onTouchStart={onTouchStart}
-        onTouchMove={onTouchMove}
-        onTouchEnd={onTouchEnd}
-        style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '48px 0 120px' }}
-      >
-        <div ref={contentRef} style={{
-          transform: `scale(${zoom})`,
-          transformOrigin: 'top center',
-          display: 'flex', flexDirection: 'column', alignItems: 'center',
-          gap: 6,
-          // Expand layout height so scroll area doesn't collapse at zoomed-out sizes
-          marginBottom: zoom < 1 ? `${(1 - zoom) * -400}px` : 0,
-        }}>
-          {sortedItems.length === 0 && (
-            <div style={{ color: 'rgba(255,255,255,0.15)', fontSize: 14, marginTop: 80, letterSpacing: '0.02em' }}>Henüz soru yok.</div>
+    <div ref={chromeRootRef} className="solve-chrome-root" style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bg-canvas)' }}>
+      <header className="chrome-topbar">
+        <div className="chrome-topbar-start">
+          {breadcrumbSegments.length > 0 ? (
+            <Breadcrumb segments={breadcrumbSegments} current={docName} />
+          ) : (
+            <span className="chrome-doc-name" title={docName}>{docName}</span>
           )}
-          {(() => {
-            let qNum = 0;
-            return sortedItems.map(item => {
-              const isQ = item.type === 'question';
-              if (isQ) qNum++;
-              return (
-                <QuestionCard
-                  key={item.regionId}
-                  item={item}
-                  isQuestion={isQ}
-                  questionNumber={isQ ? qNum : undefined}
-                  solution={isQ ? solutions.find(s => s.questionIndex === item.questionIndex) : undefined}
-                  strokes={allStrokes[item.questionIndex] || []}
-                  onStrokesChange={s => onStrokesChange(item.questionIndex, s)}
-                  palmRejection={palmRejection}
-                  bgStyle={bgStyle}
-                  zoom={zoom}
-                  showSolOverride={showAllSol ? true : undefined}
-                />
-              );
-            });
-          })()}
+          <span className="chrome-step is-current"><span className="chrome-step-num">3</span><span className="chrome-step-label">Çöz</span></span>
         </div>
+        <div className="chrome-topbar-end">
+          <SolveChromeActions onOpenLibrary={onOpenLibrary} saveStatus={saveStatus} />
+          {totalQ > 0 && (
+            <SolveProgressSummary questionStatus={questionStatus} contentKeys={contentKeys} />
+          )}
+          {Object.values(questionStatus).some(s => s === 'wrong') && (
+            <button
+              type="button"
+              className={`btn btn-ghost chrome-touch-btn${filterWrongOnly ? ' is-active' : ''}`}
+              onClick={() => {
+                hapticLight();
+                setFilterWrongOnly(v => !v);
+                setFlowIndex(0);
+              }}
+            >
+              {filterWrongOnly ? 'Tümü' : 'Yanlışlar'}
+            </button>
+          )}
+          {visibleTotalQ > 0 && (
+            <QuestionNavigator
+              current={Math.min(flowIndex + 1, visibleTotalQ)}
+              total={visibleTotalQ}
+              onPrev={() => setFlowIndex(i => Math.max(0, i - 1))}
+              onNext={() => setFlowIndex(i => Math.min(visibleTotalQ - 1, i + 1))}
+            />
+          )}
+          {solutions.length > 0 && (
+            <button type="button" className="btn btn-ghost chrome-touch-btn" onClick={() => { hapticLight(); setShowAllSol(v => !v); }}>
+              {showAllSol ? 'Çözümleri gizle' : 'Tüm çözümler'}
+            </button>
+          )}
+          <ZoomControls zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset} />
+        </div>
+      </header>
+
+      <div className="solve-chrome-layout solve-chrome-layout--classic">
+        <DrawToolbar
+          dock={toolbarDock}
+          tool={tool as DrawTool}
+          color={color}
+          size={size}
+          palm={palmRejection}
+          onTool={t => applyTool(t)}
+          onColor={applyColor}
+          onSize={applySize}
+          onPalm={() => setPalmRejection(v => !v)}
+          onGoEdit={onGoEdit}
+          onUndo={undo}
+          onRedo={redo}
+          canUndo={canUndo}
+          canRedo={canRedo}
+          extra={
+            <button type="button" className="tool-btn" onClick={toggleBg} aria-label="Arka plan">
+              <Grid3x3 size={18} />
+            </button>
+          }
+        />
+        {showDockTip && (
+          <OnboardingTip
+            position="right"
+            title="Çizim araçları"
+            message="Dock’tan araç seçin; geri al ve yinele burada. Sorular arasında üstteki oklarla gezinin."
+            onDismiss={() => {
+              markOnboardingSeen('solve_dock');
+              setShowDockTip(false);
+            }}
+          />
+        )}
+        <div
+          ref={scrollRef}
+          onWheel={onWheel}
+          onTouchStart={onTouchStart}
+          onTouchMove={onTouchMove}
+          onTouchEnd={onTouchEnd}
+          className="solve-chrome-canvas"
+          style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px 72px 80px' }}
+        >
+          <div ref={contentRef} className="solve-classic-scroll" style={{
+            transform: `scale(${zoom})`,
+            transformOrigin: 'top center',
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
+            marginBottom: zoom < 1 ? `${(1 - zoom) * -400}px` : 0,
+          }}>
+            {solveFlow.length === 0 && (
+              <div style={{ color: 'var(--text-tertiary)', fontSize: 14, marginTop: 80 }}>Henüz soru yok.</div>
+            )}
+            {visibleFlow.map(entry => {
+              if (entry.kind === 'solution') {
+                return (
+                  <SolutionBetweenCard
+                    key={entry.item.regionId}
+                    item={entry.item}
+                    questionNumber={entry.questionNumber}
+                    segmentIndex={entry.segmentIndex}
+                    showSolOverride={showAllSol || cardSolShown ? true : undefined}
+                  />
+                );
+              }
+              const isQ = entry.item.type === 'question';
+              const sk = strokeKey(entry.item);
+              const solForCard = solutions.find(s => s.questionIndex === entry.item.questionIndex);
+              const isActive = entry.item.regionId === activeRegionId;
+              return (
+                <div key={entry.item.regionId} className={isQ ? 'question-card-wrap' : undefined} style={{ outline: isActive ? '2px solid var(--accent)' : undefined, borderRadius: 8 }}>
+                  <QuestionCard
+                    item={entry.item}
+                    isQuestion={isQ}
+                    questionNumber={entry.questionNumber}
+                    stemIndex={entry.stemIndex}
+                    solution={solForCard}
+                    strokes={allStrokes[sk] || []}
+                    onStrokesChange={s => commit(sk, s)}
+                    palmRejection={palmRejection}
+                    bgStyle={bgStyle}
+                    zoom={zoom}
+                    showSolOverride={showAllSol || (isActive && cardSolShown) ? true : undefined}
+                    answerStatus={questionStatus[sk] ?? null}
+                    onAnswerStatusChange={onQuestionStatusChange ? s => onQuestionStatusChange(sk, s) : undefined}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <ClassicThumbZone
+          current={visibleTotalQ > 0 ? Math.min(flowIndex + 1, visibleTotalQ) : 0}
+          total={visibleTotalQ}
+          onPrev={() => setFlowIndex(i => Math.max(0, i - 1))}
+          onNext={() => setFlowIndex(i => Math.min(visibleTotalQ - 1, i + 1))}
+          canShowSol={solutions.length > 0}
+          solShown={showAllSol || cardSolShown}
+          onToggleSol={() => {
+            if (showAllSol) {
+              setShowAllSol(false);
+              setCardSolShown(v => !v);
+            } else {
+              setCardSolShown(v => !v);
+            }
+          }}
+        />
       </div>
     </div>
   );
+
 };
+

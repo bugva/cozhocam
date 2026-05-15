@@ -1,6 +1,9 @@
 import React from 'react';
-import { X, FileText, Layout } from 'lucide-react';
-import { type SolveLayout, type AppSettings, saveSettings } from '../utils/settings';
+import { X, FileText, Layout, Columns2, Rows3, Sun, Moon, Monitor } from 'lucide-react';
+import {
+  type SolveLayout, type DocSolutionPlacement, type ToolbarDock, type ThemeMode,
+  type AppSettings, saveSettings,
+} from '../utils/settings';
 
 interface SettingsPanelProps {
   settings: AppSettings;
@@ -8,74 +11,110 @@ interface SettingsPanelProps {
   onClose: () => void;
 }
 
-const layouts: { id: SolveLayout; label: string; desc: string; icon: React.ReactNode }[] = [
-  { id: 'classic', label: 'Klasik (A4 Kart)', desc: 'Sorular dikey kartlar halinde sıralanır, her kartın altında çizim alanı.', icon: <Layout size={24} /> },
-  { id: 'document', label: 'Belge Modu', desc: 'Orijinal PDF düzeni korunur, soru dışındaki alanlar beyaz. Çözüm sağda açılır.', icon: <FileText size={24} /> },
+const layouts: { id: SolveLayout; label: string; icon: React.ReactNode }[] = [
+  { id: 'classic', label: 'Klasik', icon: <Layout size={22} /> },
+  { id: 'document', label: 'Belge', icon: <FileText size={22} /> },
+];
+
+const docPlacements: { id: DocSolutionPlacement; label: string; icon: React.ReactNode }[] = [
+  { id: 'side', label: 'Yanda', icon: <Columns2 size={20} /> },
+  { id: 'below', label: 'Sonraki soru', icon: <Rows3 size={20} /> },
+];
+
+const docks: { id: ToolbarDock; label: string }[] = [
+  { id: 'right', label: 'Sağ' },
+  { id: 'left', label: 'Sol' },
+  { id: 'bottom', label: 'Alt' },
+];
+
+const themes: { id: ThemeMode; label: string; icon: React.ReactNode }[] = [
+  { id: 'system', label: 'Sistem', icon: <Monitor size={18} /> },
+  { id: 'light', label: 'Açık', icon: <Sun size={18} /> },
+  { id: 'dark', label: 'Koyu', icon: <Moon size={18} /> },
 ];
 
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onChange, onClose }) => {
-  const update = (patch: Partial<AppSettings>) => {
-    const next = saveSettings(patch);
-    onChange(next);
-  };
+  const update = (patch: Partial<AppSettings>) => onChange(saveSettings(patch));
+  const docPlacement = settings.docSolutionPlacement ?? 'side';
 
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(12px)' }} onClick={onClose}>
-      <div onClick={e => e.stopPropagation()} style={{
-        background: 'var(--bg-secondary, #1c1c1e)', borderRadius: 20, padding: 0, width: 440, maxWidth: '92vw',
-        boxShadow: '0 24px 80px rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.1)',
-        overflow: 'hidden', animation: 'scaleIn 0.25s cubic-bezier(0.34,1.56,0.64,1)',
-      }}>
-        {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-          <span style={{ fontSize: 16, fontWeight: 800, color: 'var(--text-primary, #f5f5f7)' }}>Ayarlar</span>
-          <button onClick={onClose} style={{ background: 'rgba(255,255,255,0.08)', border: 'none', borderRadius: 8, width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'var(--text-secondary, #98989d)', transition: 'all 0.15s' }}>
-            <X size={14} />
-          </button>
+    <div className="settings-sheet-backdrop" onClick={onClose}>
+      <div className="settings-sheet" onClick={e => e.stopPropagation()} role="dialog" aria-label="Ayarlar">
+        <div className="settings-sheet-handle" />
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 20px 8px', borderBottom: '1px solid var(--glass-border)' }}>
+          <span style={{ fontSize: 16, fontWeight: 800 }}>Ayarlar</span>
+          <button type="button" onClick={onClose} className="sidebar-toggle-btn" aria-label="Kapat"><X size={16} /></button>
         </div>
 
-        <div style={{ padding: '20px 20px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-          {/* Solve layout selection */}
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-tertiary, #636366)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 10 }}>Çözme Ekranı Tasarımı</div>
+        <div style={{ padding: '16px 20px 28px', display: 'flex', flexDirection: 'column', gap: 20, overflowY: 'auto', maxHeight: 'calc(88vh - 80px)' }}>
+          <section>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-tertiary)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 10 }}>Tema</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {themes.map(t => (
+                <button key={t.id} type="button" onClick={() => update({ themeMode: t.id })} className={`pdf-mode-tab${(settings.themeMode ?? 'system') === t.id ? ' is-active--question' : ''}`} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '10px 8px', cursor: 'pointer', fontFamily: 'inherit' }}>
+                  {t.icon}
+                  <span style={{ fontSize: 11, fontWeight: 700 }}>{t.label}</span>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-tertiary)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 10 }}>Araç çubuğu</div>
+            <div className="pdf-mode-tabs" style={{ width: '100%' }}>
+              {docks.map(d => (
+                <button key={d.id} type="button" className={`pdf-mode-tab${(settings.toolbarDock ?? 'right') === d.id ? ' is-active--question' : ''}`} style={{ flex: 1, cursor: 'pointer', fontFamily: 'inherit' }} onClick={() => update({ toolbarDock: d.id })}>{d.label}</button>
+              ))}
+            </div>
+          </section>
+
+          <section>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-tertiary)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 10 }}>Çözme ekranı</div>
             <div style={{ display: 'flex', gap: 10 }}>
               {layouts.map(l => {
                 const active = settings.solveLayout === l.id;
                 return (
-                  <button key={l.id} onClick={() => update({ solveLayout: l.id })} style={{
-                    flex: 1, padding: '16px 14px', borderRadius: 14, cursor: 'pointer',
-                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center',
-                    background: active ? 'rgba(10,132,255,0.12)' : 'rgba(255,255,255,0.04)',
-                    border: active ? '2px solid rgba(10,132,255,0.5)' : '2px solid rgba(255,255,255,0.08)',
-                    color: active ? '#0a84ff' : 'var(--text-secondary, #98989d)',
-                    transition: 'all 0.2s', fontFamily: 'inherit',
+                  <button key={l.id} type="button" onClick={() => update({ solveLayout: l.id })} style={{
+                    flex: 1, padding: '14px 12px', borderRadius: 14, cursor: 'pointer', fontFamily: 'inherit',
+                    background: active ? 'rgba(10,132,255,0.12)' : 'var(--sidebar-item-hover)',
+                    border: active ? '2px solid rgba(10,132,255,0.5)' : '1px solid var(--glass-border)',
                   }}>
-                    <div style={{ width: 44, height: 44, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', background: active ? 'rgba(10,132,255,0.15)' : 'rgba(255,255,255,0.06)' }}>
-                      {l.icon}
-                    </div>
-                    <div style={{ fontSize: 13, fontWeight: 700 }}>{l.label}</div>
-                    <div style={{ fontSize: 10, lineHeight: 1.4, color: 'var(--text-tertiary, #636366)' }}>{l.desc}</div>
+                    <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'center' }}>{l.icon}</div>
+                    <div style={{ fontSize: 12, fontWeight: 700, textAlign: 'center' }}>{l.label}</div>
                   </button>
                 );
               })}
             </div>
-          </div>
+          </section>
 
-          {/* Palm rejection default */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
+          {settings.solveLayout === 'document' && (
+            <section>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-tertiary)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 10 }}>Çözüm konumu</div>
+              <div style={{ display: 'flex', gap: 10 }}>
+                {docPlacements.map(p => (
+                  <button key={p.id} type="button" onClick={() => update({ docSolutionPlacement: p.id })} style={{
+                    flex: 1, padding: '12px', borderRadius: 14, cursor: 'pointer', fontFamily: 'inherit',
+                    background: docPlacement === p.id ? 'rgba(48,209,88,0.1)' : 'var(--sidebar-item-hover)',
+                    border: docPlacement === p.id ? '2px solid rgba(48,209,88,0.45)' : '1px solid var(--glass-border)',
+                  }}>
+                    <div style={{ marginBottom: 6, display: 'flex', justifyContent: 'center' }}>{p.icon}</div>
+                    <div style={{ fontSize: 12, fontWeight: 700, textAlign: 'center' }}>{p.label}</div>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderRadius: 12, background: 'var(--sidebar-item-hover)' }}>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary, #f5f5f7)' }}>El Reddi (Palm Rejection)</div>
-              <div style={{ fontSize: 11, color: 'var(--text-tertiary, #636366)', marginTop: 2 }}>Dokunmatik ekranda el temasını yok say</div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>El reddi</div>
+              <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>Tablet için önerilir</div>
             </div>
-            <button onClick={() => update({ palmRejection: !settings.palmRejection })} style={{
+            <button type="button" onClick={() => update({ palmRejection: !settings.palmRejection })} style={{
               width: 48, height: 28, borderRadius: 14, border: 'none', cursor: 'pointer', position: 'relative',
-              background: settings.palmRejection ? '#30d158' : 'rgba(255,255,255,0.15)', transition: 'background 0.2s',
+              background: settings.palmRejection ? '#30d158' : 'var(--glass-border)',
             }}>
-              <div style={{
-                position: 'absolute', top: 2, left: settings.palmRejection ? 22 : 2,
-                width: 24, height: 24, borderRadius: 12, background: '#fff',
-                boxShadow: '0 1px 4px rgba(0,0,0,0.2)', transition: 'left 0.2s',
-              }} />
+              <div style={{ position: 'absolute', top: 2, left: settings.palmRejection ? 22 : 2, width: 24, height: 24, borderRadius: 12, background: '#fff', transition: 'left 0.2s' }} />
             </button>
           </div>
         </div>

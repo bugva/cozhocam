@@ -19,9 +19,13 @@ export interface CroppedItem {
   dataUrl: string;
   width: number;
   height: number;
-  questionIndex: number;  // sorular için: soru numarası; kökler için: benzersiz index
+  questionIndex: number;  // ana soru numarası (0 tabanlı)
   sortY: number;          // PDF'deki y koordinatı — sıralama için
+  stemIndex?: number;     // öncül: 1, 2, … (aynı soru altında)
+  segmentIndex?: number;  // çözüm: hangi boşluk (0 = soru→öncül1)
 }
+
+export type QuestionAnswerStatus = 'correct' | 'wrong';
 
 export interface DocumentRecord {
   id: string;
@@ -31,6 +35,8 @@ export interface DocumentRecord {
   croppedItems: CroppedItem[];
   excalidrawElements: readonly any[];
   strokes: Record<number, any[]>;
+  /** Klasik çözüm: strokeKey → doğru/yanlış */
+  questionStatus?: Record<number, QuestionAnswerStatus>;
   mode: 'SELECT_QUESTIONS' | 'ADJUST_SOLUTIONS' | 'SOLVE';
   createdAt: number;
   courseId?: string;   // hangi derse ait

@@ -2,6 +2,10 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+import { loadSettings } from './utils/settings'
+import { applyThemeMode } from './utils/theme'
+
+applyThemeMode(loadSettings().themeMode ?? 'system');
 import { ErrorBoundary } from './ErrorBoundary.tsx'
 
 // Prevent browser-level zoom (pinch, Ctrl+scroll, gesture)
