@@ -110,7 +110,7 @@ export const DrawToolbar: React.FC<DrawToolbarProps> = ({
         <div className="tool-dock-sep" />
 
         {/* Renkler — her zaman görünür */}
-        <div className="tool-dock-colors tool-dock-colors--inline" role="group" aria-label="Renkler">
+        <div className="tool-dock-colors--inline" role="group" aria-label="Renkler">
           {COLORS.map(c => (
             <button
               key={c}
@@ -127,7 +127,7 @@ export const DrawToolbar: React.FC<DrawToolbarProps> = ({
         <div className="tool-dock-sep" />
 
         {/* Kalınlık — her zaman görünür */}
-        <div className="tool-size-presets tool-size-presets--inline" role="group" aria-label="Kalınlık">
+        <div className="tool-size-presets--inline" role="group" aria-label="Kalınlık">
           {STROKE_PRESETS.map(p => {
             const active = activePresetValue === p.value;
             return (

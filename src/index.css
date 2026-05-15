@@ -1323,25 +1323,37 @@ body {
   flex-wrap: wrap;
   gap: 5px;
   align-items: center;
-  max-width: 120px;
+  max-width: 110px;
+  flex-shrink: 0;
 }
 .tool-dock-inner--vertical .tool-dock-colors--inline {
   flex-direction: column;
   flex-wrap: nowrap;
   max-width: none;
+  max-height: 200px;
 }
 .tool-color-swatch--sm {
   width: 22px;
   height: 22px;
   min-width: 22px;
   min-height: 22px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
   flex-shrink: 0;
+  transition: transform 0.1s var(--ease);
+}
+.tool-color-swatch--sm.is-active {
+  border-color: var(--text-primary);
+  transform: scale(1.15);
 }
 .tool-size-presets--inline {
   display: flex;
   flex-direction: row;
   gap: 4px;
   align-items: center;
+  flex-shrink: 0;
 }
 .tool-dock-inner--vertical .tool-size-presets--inline {
   flex-direction: column;
@@ -1349,7 +1361,22 @@ body {
 .tool-size-preset--sm {
   min-width: 32px;
   min-height: 32px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
   border-radius: 8px;
+  background: var(--bg-elevated);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: background 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+.tool-size-preset--sm.is-active {
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg-elevated));
+  box-shadow: 0 0 0 2px var(--accent);
 }
 /* Ayırıcı çizgi */
 .tool-dock-sep {
