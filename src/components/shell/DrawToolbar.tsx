@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  Pencil, Eraser, PenLine, Highlighter, Hand, Undo2, Redo2, ChevronLeft, SlidersHorizontal,
+  Pencil, Eraser, PenLine, Highlighter, Hand, Undo2, Redo2, ChevronLeft, SlidersHorizontal, Settings,
 } from 'lucide-react';
 import type { ToolbarDock } from '../../utils/settings';
 import { hapticLight } from '../../utils/haptic';
@@ -39,6 +39,7 @@ export interface DrawToolbarProps {
   onRedo?: () => void;
   canUndo?: boolean;
   canRedo?: boolean;
+  onOpenSettings?: () => void;
   extra?: React.ReactNode;
 }
 
@@ -57,6 +58,7 @@ export const DrawToolbar: React.FC<DrawToolbarProps> = ({
   onRedo,
   canUndo,
   canRedo,
+  onOpenSettings,
   extra,
 }) => {
   const [collapsed, setCollapsed] = useState(false);
@@ -104,7 +106,13 @@ export const DrawToolbar: React.FC<DrawToolbarProps> = ({
     <div className={`tool-dock tool-dock--${dock}`} role="toolbar" aria-label="Çizim araçları">
       <div className={`tool-dock-inner tool-dock-inner--compact${isVertical ? ' tool-dock-inner--vertical' : ''}`}>
         {onGoEdit && (
-          <button type="button" className="tool-btn tool-btn--compact tool-btn--ghost" onClick={onGoEdit}>
+          <button
+            type="button"
+            className="tool-btn tool-btn--compact tool-btn--ghost"
+            onClick={onGoEdit}
+            aria-label="Düzenlemeye dön"
+            title="Düzenlemeye dön"
+          >
             <ChevronLeft size={16} />
           </button>
         )}
@@ -235,6 +243,17 @@ export const DrawToolbar: React.FC<DrawToolbarProps> = ({
               <Redo2 size={16} />
             </button>
           </div>
+        )}
+
+        {onOpenSettings && (
+          <button
+            type="button"
+            className="tool-btn tool-btn--compact tool-btn--ghost"
+            onClick={() => { hapticLight(); onOpenSettings(); }}
+            aria-label="Ayarlar"
+          >
+            <Settings size={16} />
+          </button>
         )}
 
         {extra}

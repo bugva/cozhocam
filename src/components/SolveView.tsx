@@ -1,5 +1,9 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { Trash2, Eye, EyeOff, Grid3x3, Square, CheckCircle2, XCircle } from 'lucide-react';
+import { Trash2, Grid3x3, Square, CheckCircle2, XCircle } from 'lucide-react';
+import { SolveFocusToggle } from './shell/SolveFocusToggle';
+import { SolveSidebarToggle } from './shell/SolveSidebarToggle';
+import { useConfirm } from '../contexts/ConfirmContext';
+import { SaveIndicator } from './shell/SaveIndicator';
 import { SCALE } from '../utils/pdfCrop';
 
 const A4_W = 794;
@@ -29,7 +33,7 @@ function solutionForContent(item: CroppedItem, solutions: CroppedItem[]): Croppe
 
 type QuestionStatus = 'correct' | 'wrong' | null;
 
-import type { ToolbarDock, BgStyle as SettingsBgStyle } from '../utils/settings';
+import type { ToolbarDock, BgStyle as SettingsBgStyle, SaveNotificationMode } from '../utils/settings';
 import { DrawToolbar, type DrawTool } from './shell/DrawToolbar';
 import { ZoomControls } from './shell/ZoomControls';
 import { QuestionNavigator } from './shell/QuestionNavigator';
@@ -40,7 +44,7 @@ import { hasSeenOnboarding, markOnboardingSeen } from '../utils/onboarding';
 import { SolveChromeActions } from './shell/SolveChromeActions';
 import { SolveProgressSummary } from './shell/SolveProgressSummary';
 import { ClassicThumbZone } from './shell/ClassicThumbZone';
-import { hapticLight } from '../utils/haptic';
+import { hapticLight, hapticMedium } from '../utils/haptic';
 import type { SaveStatus } from './shell/SaveIndicator';
 import { useApplePencilGestures } from '../hooks/useApplePencilGestures';
 
@@ -56,8 +60,13 @@ interface SolveViewProps {
   defaultBgStyle: SettingsBgStyle;
   docName: string;
   breadcrumbSegments?: string[];
-  onOpenLibrary?: () => void;
+  onOpenSettings?: () => void;
+  onOpenSidebar?: () => void;
+  focusMode?: boolean;
+  onFocusModeChange?: (focused: boolean) => void;
   saveStatus?: SaveStatus;
+  onSaveRetry?: () => void;
+  saveNotification?: SaveNotificationMode;
   questionStatus?: Record<number, QuestionAnswerStatus>;
   onQuestionStatusChange?: (key: number, status: QuestionAnswerStatus | null) => void;
 }
@@ -133,17 +142,13 @@ const QuestionCard: React.FC<{
   answerStatus?: QuestionAnswerStatus | null;
   onAnswerStatusChange?: (status: QuestionAnswerStatus | null) => void;
 }> = ({ item, isQuestion, questionNumber, stemIndex, solution, strokes, onStrokesChange, palmRejection, bgStyle, zoom, showSolOverride, answerStatus = null, onAnswerStatusChange }) => {
+  const { confirm } = useConfirm();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const offRef = useRef<HTMLCanvasElement | null>(null);
   const activeStroke = useRef<StrokeData | null>(null);
   const strokesRef = useRef(strokes);
   const drawing = useRef(false);
-  const [showSolLocal, setShowSolLocal] = useState(false);
-  const showSol = showSolOverride ?? showSolLocal;
-  const setShowSol = (v: boolean | ((prev: boolean) => boolean)) => {
-    const next = typeof v === 'function' ? v(showSolLocal) : v;
-    setShowSolLocal(next);
-  };
+  const showSol = showSolOverride ?? false;
   const status = answerStatus;
   const setStatus = (next: QuestionStatus | ((prev: QuestionStatus) => QuestionStatus)) => {
     const resolved = typeof next === 'function' ? next(status) : next;
@@ -243,9 +248,18 @@ const QuestionCard: React.FC<{
     onStrokesChange(next);
   };
 
-  const clear = () => {
-    strokesRef.current = []; onStrokesChange([]);
-    bakeStrokes([]); composite();
+  const clear = async () => {
+    const ok = await confirm({
+      title: 'Çizimleri temizle',
+      message: 'Bu sorunun cevap alanındaki tüm çizimler silinecek.',
+      confirmLabel: 'Temizle',
+      danger: true,
+    });
+    if (!ok) return;
+    strokesRef.current = [];
+    onStrokesChange([]);
+    bakeStrokes([]);
+    composite();
   };
 
   return (
@@ -297,32 +311,6 @@ const QuestionCard: React.FC<{
           ><XCircle size={11} /> Yanlış</button>
           </>
           )}
-          {solution && (
-            <button
-              onClick={() => setShowSol(v => !v)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-                padding: '2px 7px',
-                minHeight: 22,
-                borderRadius: 999,
-                border: '1px solid rgba(255,255,255,0.14)',
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-                fontSize: 9,
-                fontWeight: 700,
-                letterSpacing: '0.01em',
-                background: showSol ? 'rgba(255,69,58,0.09)' : 'rgba(48,209,88,0.08)',
-                color: showSol ? 'rgba(255,110,102,0.95)' : 'rgba(118,235,148,0.95)',
-                backdropFilter: 'blur(6px)',
-                WebkitBackdropFilter: 'blur(6px)',
-                transition: 'all 0.15s',
-              }}
-            >
-              {showSol ? <EyeOff size={9} /> : <Eye size={9} />} {showSol ? 'Gizle' : 'Çözüm'}
-            </button>
-          )}
         </div>
       </div>
 
@@ -368,7 +356,7 @@ const QuestionCard: React.FC<{
           <div style={{ width: 3, height: 12, borderRadius: 2, background: 'linear-gradient(135deg,#0a84ff,#5e5ce6)' }} />
           <span style={{ fontSize: 10, fontWeight: 600, color: 'rgba(255,255,255,0.3)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>Cevap</span>
         </div>
-        <button onClick={clear}
+        <button type="button" onClick={() => void clear()}
           style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.2)', fontSize: 11, fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 4, padding: '2px 6px', borderRadius: 5, transition: 'color 0.15s' }}
           onMouseEnter={e => (e.currentTarget.style.color = '#ff453a')}
           onMouseLeave={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.2)')}
@@ -415,7 +403,9 @@ const QuestionCard: React.FC<{
 export const SolveView: React.FC<SolveViewProps> = ({
   questions, stems = [], solutions, allStrokes, onStrokesChange, onGoEdit,
   toolbarDock, palmDefault, defaultBgStyle, docName, breadcrumbSegments = [],
-  onOpenLibrary, saveStatus, questionStatus = {}, onQuestionStatusChange,
+  onOpenSettings, onOpenSidebar, saveStatus, onSaveRetry, saveNotification,
+  questionStatus = {}, onQuestionStatusChange,
+  focusMode = false, onFocusModeChange,
 }) => {
   const [tool, setTool] = useState<Tool>('pencil');
   const [color, setColor] = useState('#e8e8ed');
@@ -548,9 +538,17 @@ export const SolveView: React.FC<SolveViewProps> = ({
 
   const activeRegionId = visibleContentEntries[flowIndex]?.item.regionId;
 
+  useEffect(() => {
+    if (!activeRegionId) return;
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    const el = scroll.querySelector<HTMLElement>(`[data-region-id="${CSS.escape(activeRegionId)}"]`);
+    el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [flowIndex, activeRegionId]);
+
   const onSqueezeToggle = useCallback(() => {
-    hapticLight();
-    if (visibleTotalQ > 0) setCardSolShown(v => !v);
+    hapticMedium();
+    if (visibleTotalQ > 0) setShowAllSol(v => !v);
   }, [visibleTotalQ]);
 
   useApplePencilGestures({
@@ -559,10 +557,34 @@ export const SolveView: React.FC<SolveViewProps> = ({
     onSqueezeToggle,
   });
 
+  const toggleFocus = () => onFocusModeChange?.(!focusMode);
+  const toolbarExtra = (
+    <>
+      {focusMode && onOpenSidebar && <SolveSidebarToggle onOpen={onOpenSidebar} />}
+      {focusMode && (
+        <SaveIndicator
+          status={saveStatus ?? 'idle'}
+          onRetry={onSaveRetry}
+          notificationMode={saveNotification}
+        />
+      )}
+      <SolveFocusToggle focusMode={focusMode} onToggle={toggleFocus} />
+      <button type="button" className="tool-btn" onClick={toggleBg} aria-label="Arka plan">
+        <Grid3x3 size={18} />
+      </button>
+    </>
+  );
+
   return (
-    <div ref={chromeRootRef} className="solve-chrome-root" style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bg-canvas)' }}>
-      <header className="chrome-topbar">
+    <div
+      ref={chromeRootRef}
+      className={`solve-chrome-root${focusMode ? ' solve-focus-mode' : ''}`}
+      style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bg-canvas)' }}
+    >
+      {!focusMode && (
+      <header className="chrome-topbar chrome-topbar--compact">
         <div className="chrome-topbar-start">
+          {onOpenSidebar && <SolveSidebarToggle onOpen={onOpenSidebar} />}
           {breadcrumbSegments.length > 0 ? (
             <Breadcrumb segments={breadcrumbSegments} current={docName} />
           ) : (
@@ -571,7 +593,11 @@ export const SolveView: React.FC<SolveViewProps> = ({
           <span className="chrome-step is-current"><span className="chrome-step-num">3</span><span className="chrome-step-label">Çöz</span></span>
         </div>
         <div className="chrome-topbar-end">
-          <SolveChromeActions onOpenLibrary={onOpenLibrary} saveStatus={saveStatus} />
+          <SolveChromeActions
+            saveStatus={saveStatus}
+            onSaveRetry={onSaveRetry}
+            saveNotification={saveNotification}
+          />
           {totalQ > 0 && (
             <SolveProgressSummary questionStatus={questionStatus} contentKeys={contentKeys} />
           )}
@@ -604,6 +630,7 @@ export const SolveView: React.FC<SolveViewProps> = ({
           <ZoomControls zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset} />
         </div>
       </header>
+      )}
 
       <div className="solve-chrome-layout solve-chrome-layout--classic">
         <DrawToolbar
@@ -621,15 +648,12 @@ export const SolveView: React.FC<SolveViewProps> = ({
           onRedo={redo}
           canUndo={canUndo}
           canRedo={canRedo}
-          extra={
-            <button type="button" className="tool-btn" onClick={toggleBg} aria-label="Arka plan">
-              <Grid3x3 size={18} />
-            </button>
-          }
+          onOpenSettings={onOpenSettings}
+          extra={toolbarExtra}
         />
-        {showDockTip && (
+        {showDockTip && !focusMode && (
           <OnboardingTip
-            position="right"
+            dock={toolbarDock}
             title="Çizim araçları"
             message="Dock’tan araç seçin; geri al ve yinele burada. Sorular arasında üstteki oklarla gezinin."
             onDismiss={() => {
@@ -663,7 +687,12 @@ export const SolveView: React.FC<SolveViewProps> = ({
               const solForCard = solutionForContent(entry.item, solutions);
               const isActive = entry.item.regionId === activeRegionId;
               return (
-                <div key={entry.item.regionId} className="question-card-wrap" style={{ outline: isActive ? '2px solid var(--accent)' : undefined, borderRadius: 8 }}>
+                <div
+                  key={entry.item.regionId}
+                  data-region-id={entry.item.regionId}
+                  className="question-card-wrap"
+                  style={{ outline: isActive ? '2px solid var(--accent)' : undefined, borderRadius: 8 }}
+                >
                   <QuestionCard
                     item={entry.item}
                     isQuestion={isQ}
@@ -684,22 +713,24 @@ export const SolveView: React.FC<SolveViewProps> = ({
             })}
           </div>
         </div>
-        <ClassicThumbZone
-          current={visibleTotalQ > 0 ? Math.min(flowIndex + 1, visibleTotalQ) : 0}
-          total={visibleTotalQ}
-          onPrev={() => setFlowIndex(i => Math.max(0, i - 1))}
-          onNext={() => setFlowIndex(i => Math.min(visibleTotalQ - 1, i + 1))}
-          canShowSol={solutions.length > 0}
-          solShown={showAllSol || cardSolShown}
-          onToggleSol={() => {
-            if (showAllSol) {
-              setShowAllSol(false);
-              setCardSolShown(v => !v);
-            } else {
-              setCardSolShown(v => !v);
-            }
-          }}
-        />
+        {!focusMode && (
+          <ClassicThumbZone
+            current={visibleTotalQ > 0 ? Math.min(flowIndex + 1, visibleTotalQ) : 0}
+            total={visibleTotalQ}
+            onPrev={() => setFlowIndex(i => Math.max(0, i - 1))}
+            onNext={() => setFlowIndex(i => Math.min(visibleTotalQ - 1, i + 1))}
+            canShowSol={solutions.length > 0}
+            solShown={showAllSol || cardSolShown}
+            onToggleSol={() => {
+              if (showAllSol) {
+                setShowAllSol(false);
+                setCardSolShown(v => !v);
+              } else {
+                setCardSolShown(v => !v);
+              }
+            }}
+          />
+        )}
       </div>
     </div>
   );

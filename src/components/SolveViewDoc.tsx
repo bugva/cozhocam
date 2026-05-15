@@ -1,13 +1,17 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { Eye, EyeOff, Trash2 } from 'lucide-react';
+import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
+import { Eye, EyeOff, Trash2, CheckCircle2, XCircle, LocateFixed } from 'lucide-react';
+import { SolveFocusToggle } from './shell/SolveFocusToggle';
+import { SolveSidebarToggle } from './shell/SolveSidebarToggle';
+import { SaveIndicator } from './shell/SaveIndicator';
 import { DrawToolbar, type DrawTool } from './shell/DrawToolbar';
 import { ZoomControls } from './shell/ZoomControls';
 import { QuestionNavigator } from './shell/QuestionNavigator';
 import { Breadcrumb } from './shell/Breadcrumb';
-import type { DocSolutionPlacement, ToolbarDock } from '../utils/settings';
+import type { DocSolutionPlacement, SaveNotificationMode, ToolbarDock } from '../utils/settings';
 import { SCALE, type PageLayout } from '../utils/pdfCrop';
 import type { Region } from './PdfViewer';
-import type { CroppedItem } from '../utils/db';
+import type { CroppedItem, QuestionAnswerStatus } from '../utils/db';
+import { SolveProgressSummary } from './shell/SolveProgressSummary';
 import {
   segmentIndexAfterContent,
   solutionPanelTitle,
@@ -18,9 +22,10 @@ import { OnboardingTip } from './shell/OnboardingTip';
 import { hasSeenOnboarding, markOnboardingSeen } from '../utils/onboarding';
 import { SolveChromeActions } from './shell/SolveChromeActions';
 import { DocThumbZone } from './shell/DocThumbZone';
-import { hapticLight } from '../utils/haptic';
+import { hapticLight, hapticMedium } from '../utils/haptic';
 import type { SaveStatus } from './shell/SaveIndicator';
 import { useApplePencilGestures } from '../hooks/useApplePencilGestures';
+import { useConfirm } from '../contexts/ConfirmContext';
 const DPR = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
 const MIN_ZOOM = 0.3;
 const MAX_ZOOM = 3;
@@ -59,6 +64,11 @@ function drawStroke(ctx: CanvasRenderingContext2D, s: StrokeData) {
 
 const G = { tool: 'pencil' as Tool, color: '#1a1a1f', baseSize: 2 };
 
+function strokeKey(item: CroppedItem): number {
+  if (item.type === 'stem') return item.questionIndex * 1000 + (item.stemIndex ?? 1);
+  return item.questionIndex;
+}
+
 // ── Per-page canvas with drawing ──
 const DocPage: React.FC<{
   layout: PageLayout;
@@ -72,7 +82,13 @@ const DocPage: React.FC<{
   questionNumbers: Map<number, number>;
   solutionRegions: Map<string, Region>;
   docSolutionPlacement: DocSolutionPlacement;
-}> = ({ layout, items, solMap, strokes, onStrokesChange, palmRejection, shownSols, onToggleSol, questionNumbers, solutionRegions, docSolutionPlacement }) => {
+  questionStatus: Record<number, QuestionAnswerStatus>;
+  onQuestionStatusChange?: (key: number, status: QuestionAnswerStatus | null) => void;
+}> = ({
+  layout, items, solMap, strokes, onStrokesChange, palmRejection, shownSols, onToggleSol,
+  questionNumbers, solutionRegions, docSolutionPlacement, questionStatus, onQuestionStatusChange,
+}) => {
+  const { confirm } = useConfirm();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const offRef = useRef<HTMLCanvasElement | null>(null);
   const activeStroke = useRef<StrokeData | null>(null);
@@ -106,6 +122,7 @@ const DocPage: React.FC<{
 
   const onDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (ign(e) || e.button !== 0) return;
+    if (e.pointerType === 'touch') return;
     (e.target as Element).setPointerCapture(e.pointerId);
     drawing.current = true;
     activeStroke.current = { tool: G.tool, color: G.color, baseSize: G.baseSize, points: [coord(e)] };
@@ -114,20 +131,36 @@ const DocPage: React.FC<{
     if (!drawing.current || !activeStroke.current || ign(e)) return;
     activeStroke.current.points.push(coord(e)); composite(activeStroke.current);
   };
-  const onUp = () => {
+  const onUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    try { (e.target as Element).releasePointerCapture(e.pointerId); } catch (_) {}
     if (!drawing.current || !activeStroke.current) return;
     drawing.current = false;
     const next = [...strokesRef.current, activeStroke.current];
     activeStroke.current = null; strokesRef.current = next;
     bake(next); composite(); onStrokesChange(next);
   };
-  const clear = () => { strokesRef.current = []; onStrokesChange([]); bake([]); composite(); };
+  const clear = async () => {
+    const ok = await confirm({
+      title: 'Çizimleri temizle',
+      message: 'Bu sayfadaki tüm çizimler silinecek.',
+      confirmLabel: 'Temizle',
+      danger: true,
+    });
+    if (!ok) return;
+    strokesRef.current = [];
+    onStrokesChange([]);
+    bake([]);
+    composite();
+  };
 
   const sorted = [...items].sort((a, b) => a.region.y - b.region.y);
   const placementSide = docSolutionPlacement === 'side';
   const solColLeft = placementSide ? dW : 0;
   const rowW = placementSide ? dW * 2 : dW;
-  const btnColLeft = dW;
+  const solBtnInset = 10;
+  const solBtnSize = 24;
+  /** Tüm çözüm düğmeleri sayfa sağ kenarında aynı sütunda */
+  const solBtnColRight = dW - solBtnInset;
   const rowClass = placementSide ? 'doc-page-row doc-page-row--side' : 'doc-page-row doc-page-row--below';
 
   return (
@@ -152,6 +185,50 @@ const DocPage: React.FC<{
         onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}
       />
 
+      {onQuestionStatusChange && sorted
+        .filter(({ item }) => item.type === 'question' || item.type === 'stem')
+        .map(({ item, region }) => {
+          const sk = strokeKey(item);
+          const status = questionStatus[sk];
+          const boxLeft = region.x / SCALE;
+          const boxTop = (region.y - layout.offsetY) / SCALE;
+          const variant = item.type === 'stem' ? 'stem' : 'question';
+          return (
+            <div
+              key={`status-${item.regionId}`}
+              className={`doc-status-anchor doc-status-anchor--${variant}`}
+              style={{ left: boxLeft + 6, top: boxTop + 6 }}
+            >
+              <button
+                type="button"
+                className={`doc-status-btn doc-status-btn--correct${status === 'correct' ? ' is-active' : ''}`}
+                onClick={e => {
+                  e.stopPropagation();
+                  hapticLight();
+                  onQuestionStatusChange(sk, status === 'correct' ? null : 'correct');
+                }}
+                title="Doğru"
+                aria-label="Doğru"
+              >
+                <CheckCircle2 size={10} strokeWidth={2.5} />
+              </button>
+              <button
+                type="button"
+                className={`doc-status-btn doc-status-btn--wrong${status === 'wrong' ? ' is-active' : ''}`}
+                onClick={e => {
+                  e.stopPropagation();
+                  hapticLight();
+                  onQuestionStatusChange(sk, status === 'wrong' ? null : 'wrong');
+                }}
+                title="Yanlış"
+                aria-label="Yanlış"
+              >
+                <XCircle size={10} strokeWidth={2.5} />
+              </button>
+            </div>
+          );
+        })}
+
       {/* Çözüm: her blokun sağında, dikey ortalanmış düğme */}
       {sorted
         .filter(({ item }) => item.type === 'question' || item.type === 'stem')
@@ -171,7 +248,6 @@ const DocPage: React.FC<{
           const variant = isStem ? 'stem' : 'question';
           const solReg = solutionRegions.get(sol.regionId);
           const regionRight = boxLeft + boxW;
-          const connectorW = Math.max(4, btnColLeft - regionRight - 6);
           const gapTop = solReg ? (solReg.y - layout.offsetY) / SCALE : 0;
           const gapH = solReg ? solReg.h / SCALE : 0;
           /** Sonraki soru/öncülün başladığı Y (beyaz alanın alt sınırı) */
@@ -179,31 +255,29 @@ const DocPage: React.FC<{
           const solImgH = sol.height / SCALE;
           const revealTop = placementSide ? gapTop : nextBlockTop;
           const revealH = placementSide ? gapH : solImgH;
-          const btnInset = 10;
-          const btnTop = boxTop + btnInset;
-          const btnLeft = regionRight - btnInset;
-          const connectorTop = btnTop + 12;
+          const btnTop = boxTop + solBtnInset;
+          const connectorTop = btnTop + solBtnSize / 2;
+          const connectorWAligned = Math.max(4, solBtnColRight - solBtnSize - regionRight);
 
           return (
             <React.Fragment key={`sol-${item.regionId}-${seg}`}>
-              {placementSide && connectorW > 0 && (
+              {placementSide && connectorWAligned > 0 && (
                 <div
                   className={`doc-sol-connector-line doc-sol-connector-line--${variant}`}
                   style={{
                     left: regionRight,
                     top: connectorTop,
-                    width: connectorW,
+                    width: connectorWAligned,
                   }}
                 />
               )}
               <div
-                className="doc-sol-anchor doc-sol-anchor--inset"
-                style={{ left: btnLeft, top: btnTop }}
+                className="doc-sol-anchor doc-sol-anchor--page-col"
+                style={{ right: solBtnInset, top: btnTop }}
               >
                 <button
                   type="button"
                   className={`doc-sol-btn doc-sol-btn--${variant}${shown ? ' is-open' : ''}`}
-                  style={{ transform: 'translate(-100%, 0)' }}
                   onClick={() => onToggleSol(toggleKey)}
                   title={shown ? 'Gizle' : panelTitle}
                   aria-label={shown ? 'Çözümü gizle' : panelTitle}
@@ -243,7 +317,7 @@ const DocPage: React.FC<{
         })}
 
       {/* Clear button */}
-      <button onClick={clear}
+      <button type="button" onClick={() => void clear()}
         style={{
           position: 'absolute', left: 8, bottom: 8, zIndex: 10,
           display: 'flex', alignItems: 'center', gap: 4,
@@ -278,14 +352,23 @@ interface SolveViewDocProps {
   palmDefault: boolean;
   docName: string;
   breadcrumbSegments?: string[];
-  onOpenLibrary?: () => void;
+  onOpenSettings?: () => void;
+  onOpenSidebar?: () => void;
+  focusMode?: boolean;
+  onFocusModeChange?: (focused: boolean) => void;
   saveStatus?: SaveStatus;
+  onSaveRetry?: () => void;
+  saveNotification?: SaveNotificationMode;
+  questionStatus?: Record<number, QuestionAnswerStatus>;
+  onQuestionStatusChange?: (key: number, status: QuestionAnswerStatus | null) => void;
 }
 
 export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
   questions, stems, solutions, regions, pageLayouts, allStrokes, onStrokesChange, onGoEdit,
   docSolutionPlacement, toolbarDock, palmDefault, docName, breadcrumbSegments = [],
-  onOpenLibrary, saveStatus,
+  onOpenSettings, onOpenSidebar, saveStatus, onSaveRetry, saveNotification,
+  questionStatus = {}, onQuestionStatusChange,
+  focusMode = false, onFocusModeChange,
 }) => {
   const [tool, setTool] = useState<Tool>('pencil');
   const [color, setColor] = useState('#1a1a1f');
@@ -296,40 +379,94 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
   const [shownSols, setShownSols] = useState<Set<number>>(new Set());
   const [, tick] = useState(0);
   const [isFar, setIsFar] = useState(false); // true when user is far from content
+  const [filterWrongOnly, setFilterWrongOnly] = useState(false);
   const [showDockTip, setShowDockTip] = useState(() => !hasSeenOnboarding('solve_dock'));
+  const [showFocusTip, setShowFocusTip] = useState(() => !hasSeenOnboarding('solve_focus'));
+  const [showPanTip, setShowPanTip] = useState(() => !hasSeenOnboarding('doc_pan_reset'));
+  const [showPencilTip, setShowPencilTip] = useState(() => !hasSeenOnboarding('pencil_squeeze'));
   const lastTapRef = useRef(0);
   const chromeRootRef = useRef<HTMLDivElement>(null);
   const toolBeforeEraserRef = useRef<Tool>('pencil');
-  const thumbSolKeyRef = useRef<number | null>(null);
-
   const { commit, undo, redo, canUndo, canRedo } = usePerKeyStrokeHistory(allStrokes, onStrokesChange);
 
   // Free-form pan+zoom: all refs, zero re-renders during gesture
   const touchesRef    = useRef<Map<number, { x: number; y: number }>>(new Map());
   const lastPinchDist = useRef<number | null>(null);
   const lastPinchMid  = useRef<{ x: number; y: number } | null>(null);
+  const lastSingleTouch = useRef<{ x: number; y: number } | null>(null);
+  const singleTouchIdRef = useRef<number | null>(null);
   const viewportRef   = useRef<HTMLDivElement>(null); // overflow:hidden container
   const contentRef    = useRef<HTMLDivElement>(null); // transform target
   const txRef = useRef(0);   // translateX
   const tyRef = useRef(0);   // translateY
   const scRef = useRef(1);   // scale
 
-  const FAR_THRESHOLD = 400; // px
+  const FAR_THRESHOLD = 200;
   const applyTransform = (tx: number, ty: number, sc: number) => {
     txRef.current = tx; tyRef.current = ty; scRef.current = sc;
     if (!contentRef.current) return;
     contentRef.current.style.transform = `translate(${tx}px, ${ty}px) scale(${sc})`;
-    // Show 'return' button when far from content or very zoomed out
-    const far = Math.abs(tx) > FAR_THRESHOLD || Math.abs(ty) > FAR_THRESHOLD || sc < 0.4;
+    const far = Math.abs(tx) > FAR_THRESHOLD || Math.abs(ty) > FAR_THRESHOLD || sc < 0.5;
     setIsFar(far);
   };
 
-  const SOFT_LIMIT = 2000;
-  const softApply = (tx: number, ty: number, sc: number) => {
-    const clampedTx = Math.max(-SOFT_LIMIT, Math.min(SOFT_LIMIT, tx));
-    const clampedTy = Math.max(-SOFT_LIMIT, Math.min(SOFT_LIMIT, ty));
-    applyTransform(clampedTx, clampedTy, sc);
-  };
+  const getPanBounds = useCallback(() => {
+    const vp = viewportRef.current;
+    const content = contentRef.current;
+    if (!vp || !content) return null;
+    const vpW = vp.clientWidth;
+    const vpH = vp.clientHeight;
+    const sc = scRef.current;
+    const cW = content.offsetWidth * sc;
+    const cH = content.offsetHeight * sc;
+    const margin = 48;
+    let minTx: number;
+    let maxTx: number;
+    let minTy: number;
+    let maxTy: number;
+    if (cW <= vpW) {
+      const cx = (vpW - cW) / 2;
+      minTx = maxTx = cx;
+    } else {
+      maxTx = margin;
+      minTx = vpW - cW - margin;
+    }
+    if (cH <= vpH) {
+      const cy = (vpH - cH) / 2;
+      minTy = maxTy = cy;
+    } else {
+      maxTy = margin;
+      minTy = vpH - cH - margin;
+    }
+    return { minTx, maxTx, minTy, maxTy };
+  }, []);
+
+  const clampPan = useCallback((tx: number, ty: number) => {
+    const b = getPanBounds();
+    if (!b) return { tx, ty };
+    return {
+      tx: Math.min(b.maxTx, Math.max(b.minTx, tx)),
+      ty: Math.min(b.maxTy, Math.max(b.minTy, ty)),
+    };
+  }, [getPanBounds]);
+
+  const panApply = useCallback((tx: number, ty: number, sc: number) => {
+    const { tx: cx, ty: cy } = clampPan(tx, ty);
+    applyTransform(cx, cy, sc);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clampPan]);
+
+  const settlePan = useCallback(() => {
+    const { tx, ty } = clampPan(txRef.current, tyRef.current);
+    if (tx === txRef.current && ty === tyRef.current) return;
+    if (!contentRef.current) return;
+    contentRef.current.style.transition = 'transform 0.28s cubic-bezier(0.25, 1, 0.5, 1)';
+    applyTransform(tx, ty, scRef.current);
+    window.setTimeout(() => {
+      if (contentRef.current) contentRef.current.style.transition = '';
+    }, 300);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clampPan]);
 
   // Animate back to origin with a smooth CSS transition
   const returnToPage = () => {
@@ -360,15 +497,34 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
     setShownSols(prev => { const n = new Set(prev); n.has(qi) ? n.delete(qi) : n.add(qi); return n; });
   }, []);
 
-  const onSqueezeToggle = useCallback(() => {
-    const key = thumbSolKeyRef.current;
-    if (key != null) toggleSol(key);
-  }, [toggleSol]);
+  const allSolutionKeys = useMemo(() => {
+    const keys = new Set<number>();
+    const solKeySet = new Set(
+      solutions.map(s => solutionToggleKey(s.questionIndex, s.segmentIndex ?? 0)),
+    );
+    [...questions, ...stems].forEach(item => {
+      const seg = segmentIndexAfterContent(item);
+      if (seg === null) return;
+      const key = solutionToggleKey(item.questionIndex, seg);
+      if (solKeySet.has(key)) keys.add(key);
+    });
+    return keys;
+  }, [questions, stems, solutions]);
+
+  const toggleAllSolutions = useCallback(() => {
+    const keys = Array.from(allSolutionKeys);
+    if (keys.length === 0) return;
+    hapticMedium();
+    setShownSols(prev => {
+      const allOpen = keys.every(k => prev.has(k));
+      return allOpen ? new Set<number>() : new Set(keys);
+    });
+  }, [allSolutionKeys]);
 
   useApplePencilGestures({
     targetRef: chromeRootRef,
     onToggleEraser: togglePenEraser,
-    onSqueezeToggle,
+    onSqueezeToggle: toggleAllSolutions,
   });
 
   // Build region map
@@ -411,12 +567,12 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
     const ratio = sc / scRef.current;
     const tx = midX - (midX - txRef.current) * ratio;
     const ty = midY - (midY - tyRef.current) * ratio;
-    softApply(tx, ty, sc);
+    panApply(tx, ty, sc);
     setZoom(sc);
   };
   const zoomIn  = () => zoomTo(Math.min(MAX_ZOOM, +(scRef.current + 0.25).toFixed(2)));
   const zoomOut = () => zoomTo(Math.max(MIN_ZOOM, +(scRef.current - 0.25).toFixed(2)));
-  const zoomReset = () => { hapticLight(); softApply(0, 0, 1); setZoom(1); };
+  const zoomReset = () => { hapticLight(); panApply(0, 0, 1); setZoom(1); };
 
   // Native wheel + touch listeners — bypasses React's event system for max smoothness
   useEffect(() => {
@@ -433,15 +589,14 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
         const factor = Math.exp(-e.deltaY * 0.008); // exponential = perfectly smooth
         const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, scRef.current * factor));
         const ratio = next / scRef.current;
-        softApply(
+        panApply(
           midX - (midX - txRef.current) * ratio,
           midY - (midY - tyRef.current) * ratio,
           next,
         );
         setZoom(next);
       } else {
-        // Two-finger pan — direct pixel delta, same smoothness as native scroll
-        applyTransform(
+        panApply(
           txRef.current - e.deltaX,
           tyRef.current - e.deltaY,
           scRef.current,
@@ -459,7 +614,15 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
     Array.from(e.changedTouches).forEach(t => {
       touchesRef.current.set(t.identifier, { x: t.clientX, y: t.clientY });
     });
-    if (touchesRef.current.size === 2) {
+    if (touchesRef.current.size === 1) {
+      const t = e.changedTouches[0];
+      lastSingleTouch.current = { x: t.clientX, y: t.clientY };
+      singleTouchIdRef.current = t.identifier;
+      lastPinchDist.current = null;
+      lastPinchMid.current = null;
+    } else if (touchesRef.current.size === 2) {
+      lastSingleTouch.current = null;
+      singleTouchIdRef.current = null;
       const pts = Array.from(touchesRef.current.values());
       lastPinchDist.current = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
       lastPinchMid.current  = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
@@ -467,6 +630,17 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
   }, []);
 
   const onTouchMove = useCallback((e: React.TouchEvent) => {
+    if (touchesRef.current.size === 1 && lastSingleTouch.current != null) {
+      e.preventDefault();
+      const touch = Array.from(e.touches).find(t => t.identifier === singleTouchIdRef.current)
+        ?? e.touches[0];
+      if (!touch) return;
+      const dx = touch.clientX - lastSingleTouch.current.x;
+      const dy = touch.clientY - lastSingleTouch.current.y;
+      lastSingleTouch.current = { x: touch.clientX, y: touch.clientY };
+      panApply(txRef.current + dx, tyRef.current + dy, scRef.current);
+      return;
+    }
     if (touchesRef.current.size !== 2) return;
     e.preventDefault();
     Array.from(e.changedTouches).forEach(t => {
@@ -505,12 +679,11 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
       ty += localMidY - prevLocalY;
     }
 
-    // Apply directly — no clamp during gesture, fully free
-    applyTransform(tx, ty, sc);
+    panApply(tx, ty, sc);
 
     lastPinchDist.current = dist;
     lastPinchMid.current  = mid;
-  }, []);
+  }, [panApply]);
 
   const onTouchEnd = useCallback((e: React.TouchEvent) => {
     Array.from(e.changedTouches).forEach(t => touchesRef.current.delete(t.identifier));
@@ -519,20 +692,44 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
       lastPinchMid.current  = null;
       setZoom(scRef.current);
     }
-  }, []);
-
-  const totalPages = pageLayouts.length;
-  const currentPg = pageLayouts[activePage]?.pageNum;
-  let thumbSolKey: number | null = null;
-  if (currentPg != null) {
-    for (const { item } of pageItems.get(currentPg) ?? []) {
-      const seg = segmentIndexAfterContent(item);
-      if (seg === null) continue;
-      const key = solutionToggleKey(item.questionIndex, seg);
-      if (solMap.has(key)) { thumbSolKey = key; break; }
+    if (touchesRef.current.size === 0) {
+      lastSingleTouch.current = null;
+      singleTouchIdRef.current = null;
+      settlePan();
+    } else if (touchesRef.current.size === 1) {
+      const t = Array.from(e.touches)[0];
+      if (t) {
+        lastSingleTouch.current = { x: t.clientX, y: t.clientY };
+        singleTouchIdRef.current = t.identifier;
+      }
     }
-  }
-  thumbSolKeyRef.current = thumbSolKey;
+  }, [settlePan]);
+
+  const contentKeys = useMemo(
+    () => [...questions, ...stems].map(item => strokeKey(item)),
+    [questions, stems],
+  );
+  const totalContent = contentKeys.length;
+  const hasWrongMarked = Object.values(questionStatus).some(s => s === 'wrong');
+
+  const visiblePageLayouts = useMemo(() => {
+    if (!filterWrongOnly) return pageLayouts;
+    return pageLayouts.filter(pg => {
+      const items = pageItems.get(pg.pageNum) ?? [];
+      return items.some(({ item }) => {
+        if (item.type !== 'question' && item.type !== 'stem') return false;
+        return questionStatus[strokeKey(item)] === 'wrong';
+      });
+    });
+  }, [filterWrongOnly, pageLayouts, pageItems, questionStatus]);
+
+  useEffect(() => {
+    if (activePage >= visiblePageLayouts.length) {
+      setActivePage(Math.max(0, visiblePageLayouts.length - 1));
+    }
+  }, [activePage, visiblePageLayouts.length]);
+
+  const totalPages = visiblePageLayouts.length;
 
   const onViewportClick = () => {
     const now = Date.now();
@@ -540,19 +737,58 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
     lastTapRef.current = now;
   };
 
+  const toggleFocus = () => {
+    const next = !focusMode;
+    onFocusModeChange?.(next);
+    if (next && !hasSeenOnboarding('solve_focus')) {
+      setShowFocusTip(true);
+    }
+  };
+  const toolbarExtra = (
+    <>
+      {focusMode && onOpenSidebar && <SolveSidebarToggle onOpen={onOpenSidebar} />}
+      {focusMode && (
+        <SaveIndicator
+          status={saveStatus ?? 'idle'}
+          onRetry={onSaveRetry}
+          notificationMode={saveNotification}
+        />
+      )}
+      <SolveFocusToggle focusMode={focusMode} onToggle={toggleFocus} />
+    </>
+  );
+
   return (
-    <div ref={chromeRootRef} className="solve-chrome-root" style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <header className="chrome-topbar">
+    <div
+      ref={chromeRootRef}
+      className={`solve-chrome-root${focusMode ? ' solve-focus-mode' : ''}`}
+      style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}
+    >
+      {!focusMode && (
+      <header className="chrome-topbar chrome-topbar--compact chrome-topbar--doc-solve">
         <div className="chrome-topbar-start">
+          {onOpenSidebar && <SolveSidebarToggle onOpen={onOpenSidebar} />}
           {breadcrumbSegments.length > 0 ? (
             <Breadcrumb segments={breadcrumbSegments} current={docName} />
           ) : (
             <span className="chrome-doc-name" title={docName}>{docName}</span>
           )}
-          <span className="chrome-step is-current"><span className="chrome-step-num">3</span><span className="chrome-step-label">Çöz</span></span>
+          <nav className="chrome-stepper chrome-stepper--mini" aria-label="İlerleme">
+            <button type="button" className="chrome-step chrome-step--link" onClick={onGoEdit}>
+              <span className="chrome-step-num">1</span><span className="chrome-step-label">Soru</span>
+            </button>
+            <button type="button" className="chrome-step chrome-step--link" onClick={onGoEdit}>
+              <span className="chrome-step-num">2</span><span className="chrome-step-label">Çözüm</span>
+            </button>
+            <span className="chrome-step is-current">
+              <span className="chrome-step-num">3</span><span className="chrome-step-label">Çöz</span>
+            </span>
+          </nav>
         </div>
-        <div className="chrome-topbar-end">
-          <SolveChromeActions onOpenLibrary={onOpenLibrary} saveStatus={saveStatus} />
+        <div className="chrome-topbar-center">
+          {totalContent > 0 && (
+            <SolveProgressSummary questionStatus={questionStatus} contentKeys={contentKeys} />
+          )}
           {totalPages > 1 && (
             <QuestionNavigator
               current={activePage + 1}
@@ -561,12 +797,33 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
               onNext={() => setActivePage(p => Math.min(totalPages - 1, p + 1))}
             />
           )}
-          <ZoomControls zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset} />
-          {isFar && (
-            <button type="button" className="btn btn-ghost chrome-touch-btn" onClick={returnToPage}>Sayfaya dön</button>
+          {filterWrongOnly && totalPages === 0 && (
+            <span className="chrome-topbar-hint">Yanlış işaretli soru yok</span>
           )}
         </div>
+        <div className="chrome-topbar-end">
+          {hasWrongMarked && (
+            <button
+              type="button"
+              className={`btn btn-ghost chrome-touch-btn${filterWrongOnly ? ' is-active' : ''}`}
+              onClick={() => {
+                hapticLight();
+                setFilterWrongOnly(v => !v);
+                setActivePage(0);
+              }}
+            >
+              {filterWrongOnly ? 'Tümü' : 'Yanlışlar'}
+            </button>
+          )}
+          <SolveChromeActions
+            saveStatus={saveStatus}
+            onSaveRetry={onSaveRetry}
+            saveNotification={saveNotification}
+          />
+          <ZoomControls zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset} />
+        </div>
       </header>
+      )}
 
       <div className="solve-chrome-layout">
         <DrawToolbar
@@ -584,15 +841,39 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
           onRedo={redo}
           canUndo={canUndo}
           canRedo={canRedo}
+          onOpenSettings={onOpenSettings}
+          extra={toolbarExtra}
         />
-        {showDockTip && (
+        {showDockTip && !focusMode && (
           <OnboardingTip
-            position="right"
+            dock={toolbarDock}
             title="Çizim araçları"
             message="Sağdaki (veya ayarlardan seçtiğiniz) dock’tan kalem, silgi ve avuç reddi kullanın. Geri al / yinele de burada."
             onDismiss={() => {
               markOnboardingSeen('solve_dock');
               setShowDockTip(false);
+            }}
+          />
+        )}
+        {showPencilTip && !focusMode && (
+          <OnboardingTip
+            dock={toolbarDock}
+            title="Apple Pencil"
+            message="Çift dokunuş (kaleme fiziksel dokunma): silgi. Sıkıştırma: belgedeki tüm çözümleri aç veya kapat."
+            onDismiss={() => {
+              markOnboardingSeen('pencil_squeeze');
+              setShowPencilTip(false);
+            }}
+          />
+        )}
+        {focusMode && showFocusTip && (
+          <OnboardingTip
+            position="fixed-top"
+            title="Tam ekran"
+            message="Üst çubuk gizlendi; araç çubuğu ve sayfa gezgini açık. Sol üstten menüyü açabilirsiniz."
+            onDismiss={() => {
+              markOnboardingSeen('solve_focus');
+              setShowFocusTip(false);
             }}
           />
         )}
@@ -614,7 +895,7 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
             width: 'max-content',
             minWidth: '100%',
           }}>
-            {pageLayouts.map(pg => (
+            {visiblePageLayouts.map(pg => (
               <DocPage
                 key={pg.pageNum}
                 layout={pg}
@@ -628,17 +909,42 @@ export const SolveViewDoc: React.FC<SolveViewDocProps> = ({
                 questionNumbers={questionNumbers}
                 solutionRegions={solutionRegions}
                 docSolutionPlacement={docSolutionPlacement}
+                questionStatus={questionStatus}
+                onQuestionStatusChange={onQuestionStatusChange}
               />
             ))}
           </div>
+          {isFar && showPanTip && (
+            <OnboardingTip
+              position="fixed-top"
+              title="Sayfaya dön"
+              message="Belgeden uzaklaştınız. Alttaki düğme veya çift dokunuşla aktif sayfaya dönebilirsiniz."
+              onDismiss={() => {
+                markOnboardingSeen('doc_pan_reset');
+                setShowPanTip(false);
+              }}
+            />
+          )}
+          {isFar && !focusMode && (
+            <button
+              type="button"
+              className="doc-return-page-fab"
+              onClick={() => { hapticLight(); returnToPage(); }}
+              aria-label="Sayfaya dön"
+              title="Sayfaya dön"
+            >
+              <LocateFixed size={18} strokeWidth={2.25} />
+              <span>Sayfaya dön</span>
+            </button>
+          )}
           <DocThumbZone
             pageIndex={activePage}
             totalPages={totalPages}
             onPrevPage={() => setActivePage(p => Math.max(0, p - 1))}
             onNextPage={() => setActivePage(p => Math.min(totalPages - 1, p + 1))}
-            canToggleSol={thumbSolKey != null}
-            solShown={thumbSolKey != null && shownSols.has(thumbSolKey)}
-            onToggleSol={() => { if (thumbSolKey != null) toggleSol(thumbSolKey); }}
+            canToggleSol={false}
+            solShown={false}
+            onToggleSol={() => {}}
           />
         </div>
       </div>

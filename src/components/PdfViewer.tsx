@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useConfirm } from '../contexts/ConfirmContext';
 import { hapticLight, hapticMedium } from '../utils/haptic';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.js?url';
@@ -172,6 +173,7 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
   const setActiveQuestionId = onActiveQuestionIdChange ?? setActiveQuestionIdLocal;
   void onDrawTypeChange;
   void setDrawTypeLocal;
+  const { confirm } = useConfirm();
   const dragRef = useRef<{ id: string; lastY: number; lastX: number } | null>(null);
   const resizeRef = useRef<{ id: string; edge: 'top' | 'bottom'; lastY: number } | null>(null);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
@@ -250,6 +252,9 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
   };
 
   const activeTouches = useRef(0);
+  const pendingDrawRef = useRef<{ pointerId: number } | null>(null);
+  const drawStartRef = useRef({ x: 0, y: 0 });
+  const DRAW_THRESHOLD = 10;
 
   const onDown = (e: React.PointerEvent) => {
     if (mode !== 'SELECT_QUESTIONS' && mode !== 'ADJUST_SOLUTIONS') return;
@@ -260,20 +265,39 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
     if ((e.target as HTMLElement).closest('button')) return;
     if (mode === 'ADJUST_SOLUTIONS' && (e.target as HTMLElement).closest('[data-region="true"]')) return;
     const p = getPos(e);
-    isDrawingRef.current = true; setIsDrawing(true); setStartPos(p); setCurrentPos(p);
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    drawStartRef.current = p;
+    pendingDrawRef.current = { pointerId: e.pointerId };
+    setStartPos(p);
+    setCurrentPos(p);
+    // capture yok — önce kaydırma; eşik aşılınca çizim
   };
   const onMove = (e: React.PointerEvent) => {
-    if (!isDrawingRef.current) return;
     if (mode !== 'SELECT_QUESTIONS' && mode !== 'ADJUST_SOLUTIONS') return;
+    if (pendingDrawRef.current?.pointerId === e.pointerId && !isDrawingRef.current) {
+      const p = getPos(e);
+      const dx = p.x - drawStartRef.current.x;
+      const dy = p.y - drawStartRef.current.y;
+      // Dikey kaydırma niyeti → çizime geçme
+      if (e.pointerType === 'touch' && Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > DRAW_THRESHOLD) {
+        pendingDrawRef.current = null;
+        return;
+      }
+      if (Math.hypot(dx, dy) < DRAW_THRESHOLD) return;
+      pendingDrawRef.current = null;
+      isDrawingRef.current = true;
+      setIsDrawing(true);
+      try { containerRef.current?.setPointerCapture(e.pointerId); } catch (_) {}
+    }
+    if (!isDrawingRef.current) return;
     setCurrentPos(getPos(e));
   };
   const onUp = (e: React.PointerEvent) => {
     if (e.pointerType === 'touch') activeTouches.current = Math.max(0, activeTouches.current - 1);
+    pendingDrawRef.current = null;
     if (!isDrawingRef.current) return;
     if (mode !== 'SELECT_QUESTIONS' && mode !== 'ADJUST_SOLUTIONS') return;
     isDrawingRef.current = false; setIsDrawing(false);
-    try { (e.target as HTMLElement).releasePointerCapture(e.pointerId); } catch (_) {}
+    try { containerRef.current?.releasePointerCapture(e.pointerId); } catch (_) {}
     const end = getPos(e);
     const x = Math.min(startPos.x, end.x), y = Math.min(startPos.y, end.y);
     const w = Math.abs(end.x - startPos.x), h = Math.abs(end.y - startPos.y);
@@ -327,17 +351,38 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
     }
   };
 
+  const deleteRegionMessage = (target: Region) => {
+    if (target.type === 'question') {
+      return 'Bu soru ve bağlı öncül / çözüm alanları kalıcı olarak silinecek.';
+    }
+    if (target.type === 'stem') return 'Bu öncül alanı silinecek.';
+    return 'Bu çözüm alanı silinecek.';
+  };
+
+  const requestDeleteRegion = async (id: string) => {
+    const target = regionsRef.current.find(r => r.id === id);
+    if (!target) return;
+    const ok = await confirm({
+      title: 'Bölgeyi sil',
+      message: deleteRegionMessage(target),
+      confirmLabel: 'Sil',
+      danger: true,
+    });
+    if (!ok) return;
+    deleteRegionById(id);
+  };
+
   const startLongPressDelete = (id: string) => {
     clearLongPress();
     longPressTimerRef.current = window.setTimeout(() => {
-      deleteRegionById(id);
       hapticMedium();
+      void requestDeleteRegion(id);
     }, 550);
   };
 
   const removeRegion = (id: string, e: React.MouseEvent) => {
     e.preventDefault(); e.stopPropagation();
-    deleteRegionById(id);
+    void requestDeleteRegion(id);
   };
 
   return (
@@ -355,9 +400,10 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
           position: 'relative', width: docWidth || 'auto', height: totalHeight || 'auto',
           cursor: (mode === 'SELECT_QUESTIONS' || mode === 'ADJUST_SOLUTIONS') ? 'crosshair' : 'default',
           // İki parmak scroll için pan-y'e izin ver; tek parmak çizim touchAction:none yapar
-          touchAction: (mode === 'SELECT_QUESTIONS' || mode === 'ADJUST_SOLUTIONS') ? 'pan-y' : 'pan-y',
+          touchAction: (mode === 'SELECT_QUESTIONS' || mode === 'ADJUST_SOLUTIONS') ? 'pan-y pinch-zoom' : 'pan-y',
         }}
         onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp}
+        onPointerCancel={onUp}
       >
         {/* Per-page canvases */}
         {pdf && pages.map(p => (
@@ -418,8 +464,10 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
                 if ((e.target as HTMLElement).closest('.region-delete')) return;
                 if ((e.target as HTMLElement).dataset.resizeHandle) return;
                 if (!isDraggable) {
-                  e.stopPropagation();
-                  startLongPressDelete(region.id);
+                  if (e.pointerType !== 'touch') {
+                    e.stopPropagation();
+                    startLongPressDelete(region.id);
+                  }
                   return;
                 }
                 e.stopPropagation();
@@ -435,15 +483,19 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
                     r.id !== region.id ? r : { ...r, y: Math.max(0, r.y + dy) }
                   ), true);
                 };
-                const onUp = () => {
+                const captureEl = e.currentTarget as HTMLElement;
+                const onUp = (ev: PointerEvent) => {
+                  try { captureEl.releasePointerCapture(ev.pointerId); } catch (_) {}
                   dragRef.current = null;
                   setActiveDragId(null);
                   applyRegions(regionsRef.current);
                   window.removeEventListener('pointermove', onMv);
                   window.removeEventListener('pointerup', onUp);
+                  window.removeEventListener('pointercancel', onUp);
                 };
                 window.addEventListener('pointermove', onMv);
                 window.addEventListener('pointerup', onUp);
+                window.addEventListener('pointercancel', onUp);
               }}
               onPointerUp={clearLongPress}
               onPointerCancel={clearLongPress}
@@ -472,7 +524,8 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
                   backgroundColor: color, borderRadius: 6, cursor: 'ns-resize', zIndex: 25, opacity: 0.85,
                 }} onPointerDown={e => {
                   e.stopPropagation();
-                  e.currentTarget.setPointerCapture(e.pointerId);
+                  const captureEl = e.currentTarget as HTMLElement;
+                  captureEl.setPointerCapture(e.pointerId);
                   resizeRef.current = { id: region.id, edge, lastY: e.clientY };
 
                   const onMv = (ev: PointerEvent) => {
@@ -486,14 +539,17 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({
                         : { ...r, h: Math.max(r.h + d, 20) };
                     }), true);
                   };
-                  const onUp = () => {
+                  const onUp = (ev: PointerEvent) => {
+                    try { captureEl.releasePointerCapture(ev.pointerId); } catch (_) {}
                     resizeRef.current = null;
                     applyRegions(regionsRef.current);
                     window.removeEventListener('pointermove', onMv);
                     window.removeEventListener('pointerup', onUp);
+                    window.removeEventListener('pointercancel', onUp);
                   };
                   window.addEventListener('pointermove', onMv);
                   window.addEventListener('pointerup', onUp);
+                  window.addEventListener('pointercancel', onUp);
                 }} />
               ))}
             </div>

@@ -1,11 +1,13 @@
 import React from 'react';
 import { X, List } from 'lucide-react';
 import type { Region } from '../PdfViewer';
+import type { PageLayout } from '../../utils/pdfCrop';
 
 interface RegionListPanelProps {
   open: boolean;
   onClose: () => void;
   regions: Region[];
+  pageLayouts?: PageLayout[];
   activeQuestionId: string | null;
   onSelect: (region: Region) => void;
 }
@@ -16,10 +18,16 @@ function labelFor(r: Region, qIndex: number): string {
   return 'Çözüm alanı';
 }
 
+function pageForRegion(region: Region, layouts: PageLayout[]): number | null {
+  const pg = layouts.find(p => region.y >= p.offsetY && region.y < p.offsetY + p.height);
+  return pg?.pageNum ?? null;
+}
+
 export const RegionListPanel: React.FC<RegionListPanelProps> = ({
   open,
   onClose,
   regions,
+  pageLayouts = [],
   activeQuestionId,
   onSelect,
 }) => {
@@ -50,6 +58,7 @@ export const RegionListPanel: React.FC<RegionListPanelProps> = ({
           {items.map(r => {
             const qIdx = r.type === 'question' ? (qIdToNum.get(r.id) ?? 0) : (qIdToNum.get(r.parentQuestionId ?? '') ?? 0);
             const isActive = r.id === activeQuestionId || r.parentQuestionId === activeQuestionId;
+            const pageNum = pageLayouts.length > 0 ? pageForRegion(r, pageLayouts) : null;
             return (
               <li key={r.id}>
                 <button
@@ -58,7 +67,12 @@ export const RegionListPanel: React.FC<RegionListPanelProps> = ({
                   onClick={() => onSelect(r)}
                 >
                   <span className={`region-list-dot region-list-dot--${r.type}`} />
-                  {labelFor(r, qIdx)}
+                  <span className="region-list-item-body">
+                    <span className="region-list-item-label">{labelFor(r, qIdx)}</span>
+                    {pageNum != null && (
+                      <span className="region-list-meta">s.{pageNum}</span>
+                    )}
+                  </span>
                 </button>
               </li>
             );

@@ -2,6 +2,7 @@ import React from 'react';
 import { Check, Loader2, Settings } from 'lucide-react';
 import { SaveIndicator, type SaveStatus } from './SaveIndicator';
 import { Breadcrumb } from './Breadcrumb';
+import type { SaveNotificationMode } from '../../utils/settings';
 
 export type WorkspaceMode = 'SELECT_QUESTIONS' | 'ADJUST_SOLUTIONS' | 'SOLVE';
 
@@ -16,6 +17,9 @@ interface WorkspaceTopBarProps {
   drawControls?: React.ReactNode;
   rightExtra?: React.ReactNode;
   saveStatus?: SaveStatus;
+  onSaveRetry?: () => void;
+  saveNotification?: SaveNotificationMode;
+  onReturnToSolve?: () => void;
   breadcrumbSegments?: string[];
 }
 
@@ -35,6 +39,9 @@ export const WorkspaceTopBar: React.FC<WorkspaceTopBarProps> = ({
   drawControls,
   rightExtra,
   saveStatus,
+  onSaveRetry,
+  saveNotification,
+  onReturnToSolve,
   breadcrumbSegments = [],
 }) => {
   const stepIndex = STEPS.findIndex(s => s.id === mode);
@@ -65,7 +72,16 @@ export const WorkspaceTopBar: React.FC<WorkspaceTopBarProps> = ({
       )}
 
       <div className="chrome-topbar-end">
-        <SaveIndicator status={saveStatus ?? 'idle'} />
+        <SaveIndicator
+          status={saveStatus ?? 'idle'}
+          onRetry={onSaveRetry}
+          notificationMode={saveNotification}
+        />
+        {onReturnToSolve && mode !== 'SOLVE' && (
+          <button type="button" className="btn btn-ghost chrome-touch-btn" onClick={onReturnToSolve}>
+            Çözüme dön
+          </button>
+        )}
         {rightExtra}
         {mode === 'SELECT_QUESTIONS' && onInferSolutions && (
           <button type="button" className="btn btn-primary chrome-touch-btn" onClick={onInferSolutions} disabled={!canInfer}>

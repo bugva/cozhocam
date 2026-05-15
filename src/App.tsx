@@ -15,6 +15,8 @@ import { loadRecentDocIds, pushRecentDocId } from './utils/recentDocs';
 import { buildDocBreadcrumb, docDisplayName } from './utils/breadcrumb';
 import { hapticLight } from './utils/haptic';
 import { useEdgeSwipeOpen } from './hooks/useEdgeSwipeOpen';
+import { useConfirm } from './contexts/ConfirmContext';
+import { OfflineBanner } from './components/shell/OfflineBanner';
 
 // ── Main App ─────────────────────────────────────────────────────────────────
 function App() {
@@ -27,6 +29,7 @@ function App() {
   const [uploadCourseId, setUploadCourseId] = useState<string | null>(null);
   const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [solveFocusMode, setSolveFocusMode] = useState(false);
   const [appSettings, setAppSettings] = useState<AppSettings>(() => loadSettings());
   const [recentDocIds, setRecentDocIds] = useState<string[]>(() => loadRecentDocIds());
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -46,11 +49,20 @@ function App() {
   const isTablet = useTabletLayout();
   const activeDoc = docs.find(d => d.id === activeDocId);
   const openLibrary = () => setSidebarOpen(true);
-  const edgeSwipe = useEdgeSwipeOpen(openLibrary);
+  const { confirm } = useConfirm();
+  const edgeSwipe = useEdgeSwipeOpen(solveFocusMode ? () => {} : openLibrary);
 
   useEffect(() => {
     if (activeDoc?.mode === 'SOLVE') setSidebarOpen(false);
   }, [activeDoc?.mode, activeDocId]);
+
+  useEffect(() => {
+    if (!activeDocId || activeDoc?.mode !== 'SOLVE') setSolveFocusMode(false);
+  }, [activeDocId, activeDoc?.mode]);
+
+  useEffect(() => {
+    if (solveFocusMode) setSidebarOpen(false);
+  }, [solveFocusMode]);
 
   const loadAll = async () => {
     const [allDocs, allCourses] = await Promise.all([db.getAllDocuments(), courseDB.getAll()]);
@@ -81,6 +93,14 @@ function App() {
 
   const handleDeleteDoc = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
+    const doc = docs.find(d => d.id === id);
+    const ok = await confirm({
+      title: 'Belgeyi sil',
+      message: `"${docDisplayName(doc?.name ?? 'Belge')}" kalıcı olarak silinecek. Bu işlem geri alınamaz.`,
+      confirmLabel: 'Sil',
+      danger: true,
+    });
+    if (!ok) return;
     await db.deleteDocument(id);
     if (activeDocId === id) setActiveDocId(null);
     await loadAll();
@@ -120,7 +140,13 @@ function App() {
 
   const deleteCourse = async (e: React.MouseEvent, courseId: string) => {
     e.stopPropagation();
-    if (!confirm('Bu dersi silmek istiyor musunuz? Derse ait belgeler etkilenmez.')) return;
+    const ok = await confirm({
+      title: 'Dersi sil',
+      message: 'Bu ders silinecek. Derse ait belgeler kütüphanede kalır.',
+      confirmLabel: 'Sil',
+      danger: true,
+    });
+    if (!ok) return;
     await courseDB.delete(courseId);
     await loadAll();
   };
@@ -148,6 +174,14 @@ function App() {
     e.stopPropagation();
     const course = courses.find(c => c.id === courseId);
     if (!course || course.folders.length <= 1) return;
+    const last = course.folders[course.folders.length - 1];
+    const ok = await confirm({
+      title: 'Klasörü sil',
+      message: `"${last.name}" klasörü silinecek. İçindeki belgeler etkilenmez.`,
+      confirmLabel: 'Sil',
+      danger: true,
+    });
+    if (!ok) return;
     await updateCourse(courseId, { folders: course.folders.slice(0, -1) });
   };
 
@@ -178,7 +212,8 @@ function App() {
   };
 
   return (
-    <div className="app-root">
+    <div className={`app-root${solveFocusMode ? ' app-solve-focus' : ''}`}>
+      <OfflineBanner />
       {isTablet && sidebarOpen && (
         <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} aria-hidden />
       )}
@@ -291,7 +326,9 @@ function App() {
                 onSave={handleSaveDoc}
                 appSettings={appSettings}
                 breadcrumbSegments={breadcrumb}
-                onOpenLibrary={openLibrary}
+                onOpenSettings={() => setShowSettings(true)}
+                onOpenSidebar={openLibrary}
+                onSolveFocusModeChange={setSolveFocusMode}
                 onModeChange={mode => { if (mode === 'SOLVE') setSidebarOpen(false); }}
               />
             )}

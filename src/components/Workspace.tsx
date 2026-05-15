@@ -18,7 +18,9 @@ import { hasSeenOnboarding, markOnboardingSeen } from '../utils/onboarding';
 import { docDisplayName } from '../utils/breadcrumb';
 import { hapticSuccess } from '../utils/haptic';
 import { RegionListPanel } from './shell/RegionListPanel';
-import type { SaveStatus } from './shell/SaveIndicator';
+import { SaveErrorBanner } from './shell/SaveErrorBanner';
+import { SolveExitSheet } from './shell/SolveExitSheet';
+import { useConfirm } from '../contexts/ConfirmContext';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -28,10 +30,15 @@ interface WorkspaceProps {
   appSettings: AppSettings;
   onModeChange?: (mode: DocumentRecord['mode']) => void;
   breadcrumbSegments?: string[];
-  onOpenLibrary?: () => void;
+  onOpenSettings?: () => void;
+  onOpenSidebar?: () => void;
+  onSolveFocusModeChange?: (focused: boolean) => void;
 }
 
-export const Workspace: React.FC<WorkspaceProps> = ({ doc, onSave, appSettings, onModeChange, breadcrumbSegments = [], onOpenLibrary }) => {
+export const Workspace: React.FC<WorkspaceProps> = ({
+  doc, onSave, appSettings, onModeChange, breadcrumbSegments = [],
+  onOpenSettings, onOpenSidebar, onSolveFocusModeChange,
+}) => {
   const [mode, setMode] = useState(doc.mode);
   const {
     regions,
@@ -54,7 +61,18 @@ export const Workspace: React.FC<WorkspaceProps> = ({ doc, onSave, appSettings, 
   const [showDrawTip, setShowDrawTip] = useState(() => !hasSeenOnboarding('draw_regions'));
   const [showPinchTip, setShowPinchTip] = useState(() => !hasSeenOnboarding('pdf_pinch'));
   const [regionPanelOpen, setRegionPanelOpen] = useState(false);
+  const [solveFocusMode, setSolveFocusMode] = useState(false);
+  const [exitSheetOpen, setExitSheetOpen] = useState(false);
   const pdfScrollRef = useRef<HTMLDivElement>(null);
+  const { confirm } = useConfirm();
+
+  useEffect(() => {
+    onSolveFocusModeChange?.(solveFocusMode);
+  }, [solveFocusMode, onSolveFocusModeChange]);
+
+  useEffect(() => {
+    if (mode !== 'SOLVE') setSolveFocusMode(false);
+  }, [mode]);
 
   const pdfRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
   const [pageLayouts, setPageLayouts] = useState<PageLayout[]>([]);
@@ -67,7 +85,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ doc, onSave, appSettings, 
     await onSave({ ...doc, ...p });
     onModeChange?.(p.mode);
   }, [doc, onSave, onModeChange]);
-  const saveStatus = useDebouncedSave(savePayload, persistDoc);
+  const { status: saveStatus, retry: retrySave } = useDebouncedSave(savePayload, persistDoc);
 
   useEffect(() => {
     let cancelled = false;
@@ -92,8 +110,14 @@ export const Workspace: React.FC<WorkspaceProps> = ({ doc, onSave, appSettings, 
     setActiveQuestionId(questionRegions[questionRegions.length - 1]?.id ?? null);
   }, [questionRegions, activeQuestionId]);
 
-  const inferSolutions = () => {
+  const inferSolutions = async () => {
     if (!questionRegions.length) return;
+    const ok = await confirm({
+      title: 'Çözüm alanlarını çıkar',
+      message: 'Sorular arası boşluklardan çözüm bölgeleri otomatik oluşturulacak. Mevcut çözüm alanları değişebilir.',
+      confirmLabel: 'Çıkar',
+    });
+    if (!ok) return;
     hapticSuccess();
     setRegions(inferSolutionRegions(regions));
     setMode('ADJUST_SOLUTIONS');
@@ -152,7 +176,36 @@ export const Workspace: React.FC<WorkspaceProps> = ({ doc, onSave, appSettings, 
     });
   }, []);
 
-  const goEdit = () => setMode('SELECT_QUESTIONS');
+  const openExitSheet = () => setExitSheetOpen(true);
+
+  const goToSelectQuestions = async () => {
+    const ok = await confirm({
+      title: 'Soru seçimine dön',
+      message: 'Çözüm ekranından çıkıp soru ve öncül kutularını düzenleyebilirsiniz. Kayıtlı çizimleriniz korunur.',
+      confirmLabel: 'Düzenle',
+    });
+    if (!ok) return;
+    setExitSheetOpen(false);
+    setSolveFocusMode(false);
+    setMode('SELECT_QUESTIONS');
+  };
+
+  const goToAdjustSolutions = async () => {
+    const ok = await confirm({
+      title: 'Çözüm alanlarına dön',
+      message: 'Çözüm bölgelerini ayarlamak için düzenleme ekranına geçilecek. Kayıtlı çizimleriniz korunur.',
+      confirmLabel: 'Düzenle',
+    });
+    if (!ok) return;
+    setExitSheetOpen(false);
+    setSolveFocusMode(false);
+    setMode('ADJUST_SOLUTIONS');
+  };
+
+  const returnToSolve = () => {
+    setSolveFocusMode(false);
+    setMode('SOLVE');
+  };
 
   const focusRegion = useCallback((r: Region) => {
     if (r.type === 'question') setActiveQuestionId(r.id);
@@ -177,6 +230,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ doc, onSave, appSettings, 
 
   return (
     <div className="app-main" style={{ width: '100%', height: '100%' }}>
+      {saveStatus === 'error' && <SaveErrorBanner onRetry={retrySave} />}
       {mode !== 'SOLVE' && (
         <WorkspaceTopBar
           docName={displayName}
@@ -184,10 +238,13 @@ export const Workspace: React.FC<WorkspaceProps> = ({ doc, onSave, appSettings, 
           mode={mode}
           onInferSolutions={inferSolutions}
           onStartSolving={startSolving}
+          onReturnToSolve={croppedItems.length > 0 ? returnToSolve : undefined}
           canInfer={questionRegions.length > 0}
           isCropping={isCropping}
           drawControls={drawControls}
           saveStatus={saveStatus}
+          onSaveRetry={retrySave}
+          saveNotification={appSettings.saveNotification}
           rightExtra={(
             <>
               <button
@@ -242,12 +299,12 @@ export const Workspace: React.FC<WorkspaceProps> = ({ doc, onSave, appSettings, 
             style={{
               flex: 1, overflow: 'auto', display: 'flex', justifyContent: 'center',
               alignItems: 'flex-start', background: 'var(--bg-canvas)', padding: '16px 16px 32px',
-              position: 'relative',
+              position: 'relative', WebkitOverflowScrolling: 'touch', touchAction: 'pan-y',
             }}
           >
             {showPinchTip && (
               <OnboardingTip
-                position="bottom"
+                position="fixed-top"
                 title="Yakınlaştırma"
                 message="PDF üzerinde iki parmakla sıkıştırarak yakınlaştırıp uzaklaştırabilir; iki parmakla kaydırarak gezinebilirsiniz."
                 onDismiss={() => {
@@ -258,7 +315,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ doc, onSave, appSettings, 
             )}
             {mode === 'SELECT_QUESTIONS' && showDrawTip && (
               <OnboardingTip
-                position="top"
+                position="fixed-top"
                 title="Soru alanları çizin"
                 message="PDF üzerinde sürükleyerek soru ve öncül kutuları oluşturun. Üstteki Soru / Öncül sekmesinden tür seçin; alanı silmek için kutuya uzun basın."
                 onDismiss={() => {
@@ -283,6 +340,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ doc, onSave, appSettings, 
               open={regionPanelOpen}
               onClose={() => setRegionPanelOpen(false)}
               regions={regions}
+              pageLayouts={pageLayouts}
               activeQuestionId={activeQuestionId}
               onSelect={r => { focusRegion(r); setRegionPanelOpen(false); }}
             />
@@ -298,14 +356,21 @@ export const Workspace: React.FC<WorkspaceProps> = ({ doc, onSave, appSettings, 
             pageLayouts={pageLayouts}
             allStrokes={strokes}
             onStrokesChange={handleStrokesChange}
-            onGoEdit={goEdit}
+            onGoEdit={openExitSheet}
+            saveNotification={appSettings.saveNotification}
             docSolutionPlacement={appSettings.docSolutionPlacement ?? 'side'}
             toolbarDock={appSettings.toolbarDock ?? 'right'}
             palmDefault={appSettings.palmRejection}
             docName={displayName}
             breadcrumbSegments={breadcrumbSegments}
-            onOpenLibrary={onOpenLibrary}
-            saveStatus={saveStatus as SaveStatus}
+            onOpenSettings={onOpenSettings}
+            saveStatus={saveStatus}
+            onSaveRetry={retrySave}
+            questionStatus={questionStatus}
+            onQuestionStatusChange={handleQuestionStatusChange}
+            focusMode={solveFocusMode}
+            onFocusModeChange={setSolveFocusMode}
+            onOpenSidebar={onOpenSidebar}
           />
         )}
         {mode === 'SOLVE' && appSettings.solveLayout !== 'document' && (
@@ -317,14 +382,28 @@ export const Workspace: React.FC<WorkspaceProps> = ({ doc, onSave, appSettings, 
             onStrokesChange={handleStrokesChange}
             questionStatus={questionStatus}
             onQuestionStatusChange={handleQuestionStatusChange}
-            onGoEdit={goEdit}
+            onGoEdit={openExitSheet}
+            saveNotification={appSettings.saveNotification}
             toolbarDock={appSettings.toolbarDock ?? 'right'}
             palmDefault={appSettings.palmRejection}
             defaultBgStyle={appSettings.defaultBgStyle}
             docName={displayName}
             breadcrumbSegments={breadcrumbSegments}
-            onOpenLibrary={onOpenLibrary}
-            saveStatus={saveStatus as SaveStatus}
+            onOpenSettings={onOpenSettings}
+            saveStatus={saveStatus}
+            onSaveRetry={retrySave}
+            focusMode={solveFocusMode}
+            onFocusModeChange={setSolveFocusMode}
+            onOpenSidebar={onOpenSidebar}
+          />
+        )}
+
+        {mode === 'SOLVE' && (
+          <SolveExitSheet
+            open={exitSheetOpen}
+            onClose={() => setExitSheetOpen(false)}
+            onSelectQuestions={goToSelectQuestions}
+            onSelectSolutions={goToAdjustSolutions}
           />
         )}
       </div>

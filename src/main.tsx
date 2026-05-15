@@ -7,6 +7,13 @@ import { applyThemeMode } from './utils/theme'
 
 applyThemeMode(loadSettings().themeMode ?? 'system');
 import { ErrorBoundary } from './ErrorBoundary.tsx'
+import { ConfirmProvider } from './contexts/ConfirmContext.tsx'
+
+if (import.meta.env.PROD) {
+  import('virtual:pwa-register').then(({ registerSW }) => {
+    registerSW({ immediate: true });
+  });
+}
 
 // Prevent browser-level zoom (pinch, Ctrl+scroll, gesture)
 // Our custom zoom only affects the content area inside SolveView/SolveViewDoc
@@ -21,7 +28,9 @@ document.addEventListener('gesturechange', (e) => e.preventDefault());
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
-      <App />
+      <ConfirmProvider>
+        <App />
+      </ConfirmProvider>
     </ErrorBoundary>
   </StrictMode>,
 )

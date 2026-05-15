@@ -2,8 +2,9 @@ import React from 'react';
 import { X, FileText, Layout, Columns2, Rows3, Sun, Moon, Monitor } from 'lucide-react';
 import {
   type SolveLayout, type DocSolutionPlacement, type ToolbarDock, type ThemeMode,
-  type AppSettings, saveSettings,
+  type SaveNotificationMode, type AppSettings, saveSettings,
 } from '../utils/settings';
+import { resetAllOnboarding } from '../utils/onboarding';
 
 interface SettingsPanelProps {
   settings: AppSettings;
@@ -31,6 +32,12 @@ const themes: { id: ThemeMode; label: string; icon: React.ReactNode }[] = [
   { id: 'system', label: 'Sistem', icon: <Monitor size={18} /> },
   { id: 'light', label: 'Açık', icon: <Sun size={18} /> },
   { id: 'dark', label: 'Koyu', icon: <Moon size={18} /> },
+];
+
+const saveNotifications: { id: SaveNotificationMode; label: string; desc: string }[] = [
+  { id: 'off', label: 'Kapalı', desc: 'Üst çubukta gösterme' },
+  { id: 'error_only', label: 'Yalnızca hata', desc: 'Önerilen' },
+  { id: 'brief', label: 'Kısa onay', desc: 'Kayıt sonrası ✓' },
 ];
 
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onChange, onClose }) => {
@@ -105,6 +112,26 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onChange
             </section>
           )}
 
+          <section>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-tertiary)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 10 }}>Kayıt bildirimi</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {saveNotifications.map(n => {
+                const active = (settings.saveNotification ?? 'error_only') === n.id;
+                return (
+                  <button key={n.id} type="button" onClick={() => update({ saveNotification: n.id })} style={{
+                    display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
+                    padding: '12px 14px', borderRadius: 12, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+                    background: active ? 'rgba(10,132,255,0.12)' : 'var(--sidebar-item-hover)',
+                    border: active ? '2px solid rgba(10,132,255,0.5)' : '1px solid var(--glass-border)',
+                  }}>
+                    <span style={{ fontSize: 13, fontWeight: 700 }}>{n.label}</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{n.desc}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderRadius: 12, background: 'var(--sidebar-item-hover)' }}>
             <div>
               <div style={{ fontSize: 13, fontWeight: 600 }}>El reddi</div>
@@ -117,6 +144,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onChange
               <div style={{ position: 'absolute', top: 2, left: settings.palmRejection ? 22 : 2, width: 24, height: 24, borderRadius: 12, background: '#fff', transition: 'left 0.2s' }} />
             </button>
           </div>
+
+          <button
+            type="button"
+            className="btn btn-ghost"
+            style={{ width: '100%', justifyContent: 'center', fontFamily: 'inherit' }}
+            onClick={() => resetAllOnboarding()}
+          >
+            İpuçlarını sıfırla
+          </button>
         </div>
       </div>
     </div>
